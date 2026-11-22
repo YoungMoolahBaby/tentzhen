@@ -5,8 +5,9 @@
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
+    use std::io::Write;
     use std::path::{Path, PathBuf};
-    use std::process::Command;
+    use std::process::{Command, Stdio};
     use toml::{Table, Value};
 
     fn root() -> PathBuf {
@@ -256,10 +257,12 @@ mod tests {
             repo
         }
 
+        /// Runs git in the scratch repo, apart from the machine's config. Git for Windows turns
+        /// `core.autocrlf` on, so undoing a change would check a file out with CRLF.
         fn git(&self, args: &[&str]) {
             let ok = Command::new("git")
                 .args(["-c", "user.name=t", "-c", "user.email=t@t"])
-                .args(["-c", "commit.gpgsign=false"])
+                .args(["-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"])
                 .args(args)
                 .current_dir(&self.dir)
                 .status()
@@ -285,16 +288,25 @@ mod tests {
         }
 
         /// Whether the step passes with `change` made to the working tree, which is then undone.
+        /// The script, with `BASE`, goes to bash on its standard input. On Windows the first
+        /// `bash` can be WSL's, in System32, which parses a `-c` script once more before bash
+        /// runs it (`$BASE` and `$f` come out empty) and passes on only the variables `WSLENV`
+        /// names.
         fn passes(&self, change: impl FnOnce(&Self)) -> bool {
             change(self);
-            let ok = Command::new("bash")
-                .args(["-e", "-c", &self.script])
-                .env("BASE", "main")
+            let mut bash = Command::new("bash")
+                .arg("-e")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
                 .current_dir(&self.dir)
-                .output()
-                .unwrap()
-                .status
-                .success();
+                .spawn()
+                .unwrap();
+            let script = format!("BASE=main\n{}\n", self.script);
+            let mut stdin = bash.stdin.take().unwrap();
+            stdin.write_all(script.as_bytes()).unwrap();
+            drop(stdin);
+            let ok = bash.wait_with_output().unwrap().status.success();
             self.git(&["checkout", "-q", "--", "."]);
             self.git(&["clean", "-q", "-f", "-d"]);
             ok
