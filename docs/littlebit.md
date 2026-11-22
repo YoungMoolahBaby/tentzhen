@@ -386,7 +386,10 @@ Gate 0's echo goes through the same DAPLink serial port as the bench's Phase 1 "
 - [x] Write the i9's Amaranth platform: the clock, the LED and the UART, from the balls above
   (`gateware/boards/colorlight_i9.py`).
 - [x] Blinky, then the UART echo (Gate 0): `2026-11-22-i9-blinky` and `2026-11-22-i9-uart-echo`.
-- [ ] Train the E1 FP32 baseline and save it.
+- [x] Train the E1 FP32 baseline and save it (`models/littlebit/e1_fp32.py`, 2026-11-22). It
+  scored 9,831 of the 10,000 test images, 98.31 %, as its script printed, three runs to the same
+  weights byte for byte; the weights are on the lab computer, not committed (Open questions). Not
+  yet a grade: nothing re-checks it (Open questions).
 - [ ] Write the LittleBit layer in PyTorch and run r = 16.
 
 ## Experiments
@@ -397,7 +400,7 @@ Each cell fills as its run finishes, from the run's record or test.
 
 | run | model (784 → 256 → 128 → 10 unless noted) | variant | layer-1 total bpw | integer test acc (%) | LUTs | EBR blocks | Fmax (MHz) | images/s | status |
 |---|---|---|---|---|---|---|---|---|---|
-| E1 | FP32 dense (the ceiling) | computer only | 32 | | | | | | planned |
+| E1 | FP32 dense (the ceiling) | computer only | 32 | | | | | | trained, not graded |
 | E2 | int8 dense | computer only | 8 | | | | | | planned |
 | E3 | binary dense, one scale per output | computer only | about 1.0 | | | | | | planned |
 | E4 | LittleBit r = 4 | A, hardwired | 0.062 | | | | | | planned |
@@ -436,7 +439,9 @@ questions, with r = 16–64 as the low end.
   the lab computer, or not until then.
 - How a Python or cocotb test becomes a referent: `a_code_referent_names_code_that_exists` finds
   Rust tests only, so checks 1 and 2 need a Rust test that reads their results, or a change to it.
-- Whether weights files are committed. Rebuilding a run's bitstream needs its weights file.
+  E1's accuracy waits on the same answer: a float run has no Rust model to re-score it.
+- Whether weights files are committed. Rebuilding a run's bitstream needs its weights file. E1's,
+  0.9 MB, is on the lab computer only (its weights' sha256 `56370b2b…9431e4d8`, in its summary).
 - MNIST's terms of use, unread.
 - What follows MNIST toward the purpose: a SocialJax policy, from one of the three checkpoints its
   repo ships, is close in size (286,112 weights in its policy against this MLP's 234,752), but it

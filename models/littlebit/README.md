@@ -1,7 +1,22 @@
 # models/littlebit
 
-Project #3's model training, in PyTorch (`docs/littlebit.md`, "Languages and layout"). Nothing is
-trained here yet: the first run is E1, the FP32 baseline (`docs/littlebit.md`, "First steps").
+Project #3's model training, in PyTorch (`docs/littlebit.md`, "Languages and layout"). E1, the
+FP32 baseline, is the first run; the LittleBit layer comes next (`docs/littlebit.md`, "First
+steps").
+
+## Running E1
+
+Fetch MNIST into a folder outside the repo, and train. `mnist.py` refuses any file whose sha256 is
+not its pin; MNIST's terms are unread, so its files are never committed.
+
+    uv run --locked python mnist.py D:\tentzhen-data\mnist
+    uv run --locked python e1_fp32.py D:\tentzhen-data\mnist D:\tentzhen-runs\littlebit\e1-fp32
+
+The second writes `e1_fp32.pt` (the weights) and `e1_fp32.json` (what was run and what it scored).
+On the lab computer it took 16 s and scored 9,831 of the 10,000 test images (98.31 %). Three runs,
+two of them from the committed script, gave the same weights to the byte (2026-11-22). That is
+what the script printed, not yet a grade: nothing in the repo re-checks it (`docs/littlebit.md`,
+"Open questions").
 
 ## Setting it up
 

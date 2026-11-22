@@ -8,6 +8,7 @@ as fetched on 2026-11-22, whose md5s were the ones torchvision lists for them (p
 
 import gzip
 import hashlib
+import sys
 import urllib.request
 from pathlib import Path
 
@@ -66,3 +67,10 @@ def load(folder):
             _idx(folder / "t10k-labels-idx1-ubyte.gz", 2049, (10000,)),
         ),
     )
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        sys.exit("usage: python mnist.py <folder>, to fetch MNIST into it and check it")
+    fetch(sys.argv[1])
+    print(f"{sys.argv[1]}: all four files match their pins")
