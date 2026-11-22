@@ -1,8 +1,10 @@
-//! Project #3's golden model (docs/littlebit.md, "Verification"). So far it holds what grading a
-//! float run needs: MNIST read only as its pins allow ([`mnist`]), and a training run's committed
-//! weights, dense or LittleBit, re-scored here in f32 ([`run`]). The integer model comes with the
-//! exporter.
+//! Project #3's golden model (docs/littlebit.md, "Verification"): MNIST read only as its pins
+//! allow ([`mnist`]); a training run's committed weights, dense or LittleBit, re-scored here in f32
+//! ([`run`]); the exporter, which makes a LittleBit run an integer network ([`export`]); and the
+//! integer golden model that runs it ([`integer`]).
 
+pub mod export;
+pub mod integer;
 pub mod mnist;
 pub mod run;
 
@@ -253,5 +255,155 @@ mod tests {
             run.summary.train_correct
         );
         assert_eq!(run.summary.train_correct, 58_798);
+    }
+
+    fn r16_integer() -> integer::Network {
+        integer::Network::parse(&fs::read_to_string(r16().join(export::FILE)).unwrap()).unwrap()
+    }
+
+    /// One small LittleBit layer, worked by hand: each step is what `integer::LittleBitLayer`
+    /// says, a right shift rounds toward minus infinity, a latent too large for an int16 is
+    /// saturated and counted, and the outputs are clamped to 0..255.
+    #[test]
+    fn a_littlebit_layer_computes_what_its_steps_say() {
+        use integer::Signs;
+        let layer = integer::LittleBitLayer {
+            inputs: 2,
+            outputs: 3,
+            rank: 2,
+            input_exponent: 0,
+            g: vec![3, -2],
+            g_exponent: 0,
+            v: vec![Signs(vec![1, -1]), Signs(vec![1, 1])],
+            l: vec![5, 127],
+            l_exponent: 0,
+            latent_shift: 1,
+            u: vec![Signs(vec![1, 1]), Signs(vec![-1, 1]), Signs(vec![1, -1])],
+            h: vec![-2, 1, -1],
+            h_exponent: 0,
+            bias: vec![1, 0, 31_318],
+            output_shift: 2,
+            output_exponent: 3,
+        };
+        // p = (1 * 3, 255 * -2); a_0 = 3 - 510, a_1 = -3 - 510; t_0 = -2,535 >> 1 = -1,268, not
+        // the -1,267 truncating would give; t_1 = -65,151 >> 1 = -32,576, which fits.
+        let t = layer.trace(&[1, 255]).unwrap();
+        assert_eq!(t.p, [3, -510]);
+        assert_eq!(t.a, [-507, -513]);
+        assert_eq!(t.t, [-1_268, -32_576]);
+        assert_eq!(t.s, [-33_844, -31_308, 31_308]);
+        assert_eq!(t.z, [67_689, -31_308, 10]);
+        // 67,689 >> 2 = 16,922, clamped to 255; -7,827 clamped to 0; 10 >> 2 = 2.
+        assert_eq!(t.y, [255, 0, 2]);
+        assert_eq!(t.saturated, 0);
+        // a_1 = -765 - 510; -1,275 * 127 >> 1 = -80,963, saturated to -32,768.
+        let t = layer.trace(&[255, 255]).unwrap();
+        assert_eq!(t.a, [255, -1_275]);
+        assert_eq!(t.t, [637, -32_768]);
+        assert_eq!(t.saturated, 1);
+        assert_eq!(t.y, [255, 0, 0]);
+    }
+
+    /// `int8` takes the finest power-of-two grid that holds the largest magnitude in 127 steps,
+    /// and rounds each value to the nearest step, a half away from zero.
+    #[test]
+    fn int8_takes_the_finest_grid_that_holds_the_largest() {
+        assert_eq!(
+            export::int8(&[1.0, -0.5, 0.01]).unwrap(),
+            (vec![64, -32, 1], -6)
+        );
+        assert_eq!(
+            export::int8(&[127.0, 2.5, -2.5]).unwrap(),
+            (vec![127, 3, -3], 0)
+        );
+        assert_eq!(export::int8(&[127.5]).unwrap(), (vec![64], 1));
+        assert!(export::int8(&[0.0, 0.0]).is_err());
+    }
+
+    /// integer.json is refused unless its keys are known, its signs are signs, its shapes fit
+    /// together and its exponents add up.
+    #[test]
+    fn an_integer_network_refuses_what_does_not_fit() {
+        let text = fs::read_to_string(r16().join(export::FILE)).unwrap();
+        integer::Network::parse(&text).unwrap();
+        let v = text.find("\"v\": [").unwrap();
+        let sign = v + 6 + text[v + 6..].find('"').unwrap() + 1;
+        let mut not_a_sign = text.clone();
+        not_a_sign.replace_range(sign..sign + 1, "x");
+        let mut short = text.clone();
+        short.remove(sign);
+        let cases = [
+            (
+                text.replacen("\"rank\"", "\"extra\": 1, \"rank\"", 1),
+                "unknown field",
+            ),
+            (not_a_sign, "a sign is"),
+            (short, "not as long as its rank"),
+            (
+                text.replacen("\"latent_shift\": 10,", "\"latent_shift\": 11,", 1),
+                "add up",
+            ),
+            (
+                text.replacen("\"pixel_shift\": 1,", "\"pixel_shift\": 2,", 1),
+                "not the outputs before it",
+            ),
+        ];
+        for (bad, why) in cases {
+            assert_ne!(bad, text);
+            let refused = integer::Network::parse(&bad).unwrap_err();
+            assert!(refused.contains(why), "{refused}");
+        }
+    }
+
+    /// r16's integer.json is what the exporter writes from r16's committed weights and the
+    /// 60,000 training images.
+    #[test]
+    fn r16_integer_json_is_what_the_exporter_writes() {
+        let run = run::Run::load(&r16()).unwrap();
+        let (train, _) = mnist::load(&root(), &mnist_dir()).unwrap();
+        let net = export::export(&run, &[0, 2], 4, &train).unwrap();
+        assert_eq!(net.weights_sha256, run.summary.weights_sha256);
+        let committed = fs::read_to_string(r16().join(export::FILE)).unwrap();
+        assert!(
+            committed == export::to_json(&net),
+            "runs/r16/{} is stale: run `cargo run -p tentzhen-littlebit -- export \
+             models/littlebit/runs/r16`",
+            export::FILE
+        );
+    }
+
+    /// On the training images, which chose its latent shifts, r16's integer network saturates no
+    /// latent, and gets 58,809 of the 60,000 right, against the float run's 58,798.
+    #[test]
+    fn r16_integer_saturates_no_latent_on_the_training_images() {
+        let (train, _) = mnist::load(&root(), &mnist_dir()).unwrap();
+        let p = r16_integer().predict(&train).unwrap();
+        assert_eq!(p.saturated, 0);
+        assert_eq!(p.correct(&train), 58_809);
+    }
+
+    /// Check 1 at r = 16 (docs/littlebit.md, "Verification"): the integer golden model, run from
+    /// r16's integer.json, gets at most 0.5 points fewer of the 10,000 test images right than
+    /// the float run. It gets 9,717 against the float's 9,713, and the two pick the same digit on
+    /// 9,980 of them. No latent is saturated.
+    #[test]
+    fn r16_integer_is_within_half_a_point_of_float() {
+        let run = run::Run::load(&r16()).unwrap();
+        let (_, test) = mnist::load(&root(), &mnist_dir()).unwrap();
+        let p = r16_integer().predict(&test).unwrap();
+        let (integer, float) = (p.correct(&test), run.summary.test_correct);
+        assert!(
+            integer + 50 >= float,
+            "{integer} test images right, more than 50 under the float run's {float}"
+        );
+        assert_eq!((integer, float), (9_717, 9_713));
+        assert_eq!(p.saturated, 0);
+        let float_digits = run.predict(&[0, 2, 4], &test).unwrap();
+        let same = float_digits
+            .iter()
+            .zip(&p.digits)
+            .filter(|(f, i)| f == i)
+            .count();
+        assert_eq!(same, 9_980);
     }
 }

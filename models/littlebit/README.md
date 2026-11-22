@@ -39,6 +39,21 @@ weights, byte for byte (2026-11-22). `r16_scores_what_its_summary_says` re-score
 same `MNIST_DIR`. Where the recipe is silent, what the run chose is in `train_rank.py`'s docstring
 and in `docs/littlebit.md`, "The first LittleBit run".
 
+## The integer export
+
+The hardware doesn't run float. The exporter turns a LittleBit run into integers: int8 scales,
+signs, int32 biases and the shifts between them. It writes them beside the run as `integer.json`,
+the one file the golden model and, later, the gateware read. It's in Rust, in `crates/littlebit`,
+and needs no PyTorch. From the repo root, with `MNIST_DIR` set as above:
+
+    cargo run -p tentzhen-littlebit -- export models/littlebit/runs/r16
+
+It also prints what the integer network gets right. At r = 16 that's 9,717 of the 10,000 test
+images, 4 more than the float run's 9,713: check 1, `tested` by
+`r16_integer_is_within_half_a_point_of_float`. The Quality Gate re-runs the export and fails if
+the committed `integer.json` is not what it writes (`r16_integer_json_is_what_the_exporter_writes`).
+How each value is chosen is in `docs/littlebit.md`, "Fixed-point formats".
+
 ## Setting it up
 
 You need [uv](https://docs.astral.sh/uv/). From this folder:
