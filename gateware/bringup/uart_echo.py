@@ -1,6 +1,6 @@
 """Gate 0's second half: bytes from the computer echo back over the extension board's DAPLink at
-115,200 baud, while the LED blinks as the blinky's does (docs/littlebit.md, "Milestones"). Whether
-it echoes is unknown until bytes sent from the computer come back.
+115,200 baud, while the LED blinks as the blinky's does (docs/littlebit.md, "Milestones"). It
+does: measured, lab/records/2026-11-22-i9-uart-echo.toml.
 
 Each byte received goes into a 16-byte FIFO and is sent back as soon as the transmitter is free, so
 bytes that arrive back to back are not dropped while one is still going out.

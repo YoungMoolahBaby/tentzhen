@@ -1,7 +1,8 @@
 """A UART: 8 data bits, no parity, one stop bit, least significant bit first.
 
-`divisor` is the clock's cycles per bit: 217 for 115,200 baud from a 25 MHz clock. Whether it
-works is unknown until a byte echoes on the board (Gate 0, docs/littlebit.md).
+`divisor` is the clock's cycles per bit: 217 for 115,200 baud from a 25 MHz clock. At that divisor
+both halves echo on the i9 (measured: lab/records/2026-11-22-i9-uart-echo.toml); at any other it
+is unknown.
 """
 
 from amaranth import Cat, Const, Elaboratable, Module, Signal
