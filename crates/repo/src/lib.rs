@@ -430,6 +430,55 @@ mod tests {
         }
     }
 
+    /// Each Python project under models/ pins its own dependencies to one version each, its Python
+    /// to one release (`.python-version`) in the one series `requires-python` allows, and the rest
+    /// in the uv.lock beside it (CLAUDE.md: "Pin every dependency version"). That the lock matches
+    /// its pyproject.toml is held only where `uv sync --locked` runs, not here.
+    #[test]
+    fn every_python_dependency_is_pinned() {
+        let mut projects = 0;
+        for entry in fs::read_dir(root().join("models")).unwrap() {
+            let dir = entry.unwrap().path();
+            let file = dir.join("pyproject.toml");
+            if !file.is_file() {
+                continue;
+            }
+            projects += 1;
+            let at = file.strip_prefix(root()).unwrap().display().to_string();
+            let p = manifest(&file);
+            let project = p["project"].as_table().unwrap();
+            for dep in project["dependencies"].as_array().unwrap() {
+                let dep = dep.as_str().unwrap();
+                let pinned = dep.split_once("==").is_some_and(|(name, version)| {
+                    !name.is_empty()
+                        && !version.is_empty()
+                        && !version.contains(['*', ',', ';', ' ', '<', '>', '='])
+                });
+                assert!(pinned, "{at}: {dep} is not pinned to one version");
+            }
+            let allowed = project["requires-python"].as_str().unwrap();
+            let series = allowed
+                .strip_prefix("==")
+                .and_then(|s| s.strip_suffix(".*"))
+                .unwrap_or_else(|| panic!("{at}: requires-python names one series, not {allowed}"));
+            let release = fs::read_to_string(dir.join(".python-version"))
+                .unwrap_or_else(|_| panic!("{at}: no .python-version beside it"));
+            let release = release.trim();
+            let one_release = release.starts_with(&format!("{series}."))
+                && release.split('.').count() == 3
+                && release.split('.').all(|n| n.parse::<u32>().is_ok());
+            assert!(
+                one_release,
+                "{at}: .python-version names one release in {series}, not {release:?}"
+            );
+            assert!(dir.join("uv.lock").is_file(), "{at}: no uv.lock beside it");
+        }
+        assert!(
+            projects >= 1,
+            "found {projects} Python projects under models/"
+        );
+    }
+
     /// The Pico enforcer's build script reads lab/limits.toml through crates/lab, so the safety
     /// path must not pull in the database or the catalogue.
     #[test]
