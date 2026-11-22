@@ -213,6 +213,67 @@ mod tests {
         assert_eq!(runs, 7, "E4 to E9 and E12 name their rank");
     }
 
+    /// docs/littlebit.md's table of Clean Up's policy follows from its shapes: a layer's weights
+    /// are kernel x kernel x channels in x channels out, its multiply-accumulates are its weights
+    /// times the positions it runs at, and the totals are the sums. So do the shares, the ratio to
+    /// the MNIST network and the two sign bit rates its text gives.
+    #[test]
+    fn the_clean_up_policy_counts_follow_from_its_shapes() {
+        let doc = fs::read_to_string(root().join("docs/littlebit.md")).unwrap();
+        let header = "| layer | kernel | channels in | channels out | positions | weights | MACs per decision |";
+        let start = doc
+            .find(header)
+            .expect("docs/littlebit.md has Clean Up's table");
+        let rows: Vec<Vec<String>> = doc[start..]
+            .lines()
+            .skip(2)
+            .take_while(|line| line.starts_with('|'))
+            .map(|line| {
+                let cells = line.trim().trim_matches('|').split('|');
+                cells.map(|c| c.trim().replace(',', "")).collect()
+            })
+            .collect();
+        let n = |s: &str| -> u64 { s.parse().unwrap_or_else(|_| panic!("{s:?} is not a count")) };
+        let (mut weights, mut macs, mut conv_weights, mut conv_macs) = (0, 0, 0, 0);
+        let (total, layers) = rows.split_last().unwrap();
+        for row in layers {
+            let (k, _) = row[1].split_once(" × ").unwrap();
+            let w = n(k) * n(k) * n(&row[2]) * n(&row[3]);
+            assert_eq!(n(&row[5]), w, "{}'s weights", row[0]);
+            assert_eq!(
+                n(&row[6]),
+                w * n(&row[4]),
+                "{}'s multiply-accumulates",
+                row[0]
+            );
+            weights += w;
+            macs += w * n(&row[4]);
+            if row[0].starts_with("conv") {
+                conv_weights += w;
+                conv_macs += w * n(&row[4]);
+            }
+        }
+        assert_eq!(total[0], "total");
+        assert_eq!((n(&total[5]), n(&total[6])), (weights, macs));
+        // "286,112 for the policy alone", as "What it is for" counted it, less its biases.
+        assert_eq!(weights, 286_112);
+        let percent = |a: u64, b: u64| (100 * a + b / 2) / b;
+        let mnist = 234_752;
+        let sign_bpw = |r: f64, i: f64, o: f64| format!("{:.3}", r * (i + o) / (i * o));
+        for said in [
+            format!(
+                "They hold {} % of the weights",
+                percent(conv_weights, weights)
+            ),
+            format!("do {} % of the\n  arithmetic", percent(conv_macs, macs)),
+            format!("about {} times the MNIST", (macs + mnist / 2) / mnist),
+            format!("would be {}, against", sign_bpw(16.0, 475.0, 32.0)),
+            format!("{} at r = 16.", sign_bpw(16.0, 3872.0, 64.0)),
+        ] {
+            assert!(doc.contains(&said), "docs/littlebit.md lacks {said:?}");
+        }
+    }
+
     /// The script of the Quality Gate's step `name`, less its fetch.
     fn gate_step(name: &str) -> String {
         let workflow =

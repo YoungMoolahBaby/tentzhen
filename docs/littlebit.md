@@ -99,7 +99,9 @@ nextpnr takes `--45k --package CABGA381 --speed 6`. On arrival its JTAG IDCODE t
 siblings without reading the marking: 0x41112043 (`builds/digitizer/v1.toml`, walkthrough).
 
 **The board** is the i9 on any of the three extension boards (`scope.md`, "One i9, three extension
-boards"), with nothing wired to the headers. It uses:
+boards"), with nothing wired to the headers. Jon has two i9s (2026-11-22). A flash's serial is the
+extension board's probe's, the same for either i9 in it, so the lab log does not yet say which i9 a
+load went to: Gate 0's records name the part and its revision, not the unit. It uses:
 
 - **Clock:** 25 MHz on ball P3.
 - **LED:** ball L2, lit when driven low; the same ball is P2 pin 28.
@@ -432,6 +434,51 @@ Each cell fills as its run finishes, from the run's record or test.
 The headline results are two plots made from this table once it is full: accuracy vs. total bits
 per weight (E1–E8), and LUTs vs. sign bits for Variant A (E4–E8, E11).
 
+## After MNIST: Clean Up's policy
+
+The first real objective after MNIST passes Gate 3 is SocialJax's Clean Up policy hardwired into
+the i9, and its convolutions come early, not when that step starts (Jon, 2026-11-22). The game runs
+on the computer: each step it sends an agent's 11 × 11 × 19 observation over the UART, the i9 picks
+one of the 9 actions, and the computer plays it. Agents on the i9 and on the computer can share a
+game. The check is MNIST's: the hardwired policy picks the action the golden model does on every
+observation, and its game score stands beside the float policy's.
+
+The policy as SocialJax builds it (`algorithms/utils/networks.py` at 18e2171). Flax's convolutions
+default to stride 1 and "same" padding (google/flax at v0.10.7, the version SocialJax pins,
+`flax/linen/linear.py`), so the grid stays 11 × 11 through all three:
+
+| layer | kernel | channels in | channels out | positions | weights | MACs per decision |
+|---|---|---|---|---|---|---|
+| conv 1 | 5 × 5 | 19 | 32 | 121 | 15,200 | 1,839,200 |
+| conv 2 | 3 × 3 | 32 | 32 | 121 | 9,216 | 1,115,136 |
+| conv 3 | 3 × 3 | 32 | 32 | 121 | 9,216 | 1,115,136 |
+| dense | 1 × 1 | 3,872 | 64 | 1 | 247,808 | 247,808 |
+| actor 1 | 1 × 1 | 64 | 64 | 1 | 4,096 | 4,096 |
+| actor 2 | 1 × 1 | 64 | 9 | 1 | 576 | 576 |
+| total | | | | | 286,112 | 4,321,952 |
+
+`tested`: `the_clean_up_policy_counts_follow_from_its_shapes` recomputes the table from its shapes,
+and the two bit rates below. Biases, 233 more, are left out, as the MNIST counts leave them out.
+
+What it means for the plan:
+
+- **The convolutions are the time, not the logic.** They hold 12 % of the weights and do 94 % of the
+  arithmetic, since each kernel runs at every one of the 121 positions: about 18 times the MNIST
+  network's 234,752 multiply-accumulates per input. Hardwiring them is cheap in LUTs; they cost
+  time, and buffers between layers (11 × 11 × 32 activations, 3,872 bytes at uint8).
+- **So Phase 2's engine is a hardwired matrix applied to a stream of vectors** from the start: an MLP
+  layer streams one vector, a convolution its 121 windows of the grid (the 5 × 5 or 3 × 3 patch
+  around each position, flattened). The cocotb layer test includes a small convolution against the
+  golden model, and the MNIST network runs as the one-vector case.
+- **Low rank saves little on the convolutions' matrices.** Conv 1's is 32 × 475, and at r = 16 its
+  sign bits per weight would be 0.534, against MNIST layer 1's 0.083. Whether they stay int8 or
+  binary, or are factorized at all, is an experiment of this step. The dense layer, 64 × 3,872, is
+  where LittleBit pays: 0.254 at r = 16.
+- **How long a decision takes** is `unknown` until the engine is designed: it depends on how many
+  multiply-accumulates it does in a cycle.
+- **Running SocialJax needs JAX,** pinned at `jax[cuda12]==0.6.2`. Whether its CUDA build runs on the
+  lab computer's Windows, or it needs WSL or the CPU, is `unknown` until tried.
+
 ## Risks
 
 The biggest risk is accuracy at very low rank. If r ≤ 8 collapses, the project still answers its
@@ -454,9 +501,6 @@ questions, with r = 16–64 as the low end.
 - Where the toolchain runs before the pinned toolchain of `roadmap.md` Phase 0 exists: installed on
   the lab computer, or not until then.
 - MNIST's terms of use, unread.
-- What follows MNIST toward the purpose: a SocialJax policy, from one of the three checkpoints its
-  repo ships, is close in size (286,112 weights in its policy against this MLP's 234,752), but it
-  starts with three convolutions, which this engine does not do.
 - Which part keeps the companion's keys and attests what it runs: OpenTitan, Jon's pick, or the
   TROPIC01 already on the roadmap; and whether one part serves the companion, the bench and the
   mesh.
