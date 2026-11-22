@@ -16,8 +16,6 @@ rate decayed by step from 1e-3 to 0 over the 20 epochs, seed 0, and PyTorch's de
 algorithms, so a second run on the same machine can be compared with the first.
 """
 
-import hashlib
-import json
 import math
 import os
 import platform
@@ -34,6 +32,7 @@ import torch.nn.functional as F
 from torch import nn
 
 import mnist
+from runfiles import write_summary, write_weights
 
 SEED = 0
 EPOCHS = 20
@@ -49,17 +48,6 @@ def model():
         if i < len(WIDTHS) - 2:
             layers.append(nn.ReLU())
     return nn.Sequential(*layers)
-
-
-def write_weights(net, path):
-    """Writes every parameter, in the state dict's order, as little-endian float32, row-major in
-    PyTorch's shapes (a Linear's weight is out x in); gives the layout and the file's sha256."""
-    layout, data = [], bytearray()
-    for name, t in net.state_dict().items():
-        layout.append({"name": name, "shape": list(t.shape)})
-        data += t.detach().cpu().contiguous().numpy().astype("<f4").tobytes()
-    path.write_bytes(bytes(data))
-    return layout, hashlib.sha256(data).hexdigest()
 
 
 @torch.no_grad()
@@ -151,8 +139,7 @@ def main(mnist_folder, out_folder):
             "numpy": np.__version__,
         },
     }
-    # LF on every system: the repo keeps text files LF (.gitattributes).
-    (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", newline="\n")
+    write_summary(out / "summary.json", summary)
     print(
         f"test accuracy {summary['test_correct'] / 100:.2f}%  "
         f"train {summary['train_correct']}/{len(xtr)}  "
