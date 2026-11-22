@@ -359,8 +359,8 @@ Phase 0 may run beside Phase 1: it needs only the board and the toolchain.
    (`librelane/flows/classic.py`) for a standard-cell process (`sky130A` in its README's example).
    The ECP5's own blocks go: no PLL, block RAM or multipliers, so it is Variant A only, and the
    cocotb layer test runs against the Verilog it lays out. A tile is "about 160x100 um", "enough for
-   about 1000 digital logic gates" (Tiny Tapeout's FAQ, of its runs TT04 to TT10; the current runs'
-   size is not read), with 8 inputs, 8 outputs and 8 bidirectional pins besides the clock and reset
+   about 1000 digital logic gates" (Tiny Tapeout's FAQ, of its runs TT04 to TT10; a sky130A tile is
+   now 161.00 × 111.52 µm, `prior-art.md`, "A chip's layout"), with 8 inputs, 8 outputs and 8 bidirectional pins besides the clock and reset
    (same FAQ), so the layer takes its inputs a few bits at a time. It costs nothing. Its figures
    rest on LibreLane, OpenROAD and the process kit, which `trusted-base.toml` does not list yet.
    **Gate 5:** LibreLane finishes the layer with its own checks passing, and its cells and area per
