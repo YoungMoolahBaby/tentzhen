@@ -112,9 +112,9 @@ Gate 0 ran on i9-1: its loads, seq 2 and 4, name i9-1's probe. Gate 0's records 
 its revision, not the unit.
 
 i9-2 has run the same blinky bitstream from SRAM (seq 11), with only its own board plugged in. Jon
-saw its green LED blink about once a second (seq 12). What its flash holds, and what the LED did
-before the load, are `unknown`. So unlike Gate 0's blinky, no power-cycle control shows that this
-blink is the blinky's.
+saw its green LED blink about once a second (seq 12). It wasn't blinking before the load, as Jon
+reported afterwards (seq 13). So the blink began with the load. Gate 0's blinky used a power
+cycle as its control; this one uses before and after. What i9-2's flash holds is `unknown`.
 
 **Load with one board on USB.** openFPGALoader 1.2.0 can't choose between two identical CMSIS-DAP
 v1 probes:
