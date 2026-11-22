@@ -64,6 +64,20 @@ jobs:
       - run: cargo test --workspace --locked
         env:
           MNIST_DIR: ${{ runner.temp }}/mnist
+      # The gateware's cocotb tests, on Verilator, with OSS CAD Suite's Linux build of the same day
+      # as the lab computer's. The archive is cached, and checked against its sha256 every run.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/oss-cad-suite-linux-x64-20261121.tgz
+          key: oss-cad-suite-linux-x64-20261121
+      - name: The gateware's cocotb tests, on Verilator from OSS CAD Suite 2026-11-21
+        run: |
+          f="$RUNNER_TEMP/oss-cad-suite-linux-x64-20261121.tgz"
+          [ -f "$f" ] || curl -sSfL -o "$f" "https://github.com/YosysHQ/oss-cad-suite-build/releases/download/2026-11-21/oss-cad-suite-linux-x64-20261121.tgz"
+          echo "da62ff9cd16a69fc23607f3430459a3ca405561063e93910bf71d99012bb59e2  $f" | sha256sum -c -
+          tar xzf "$f" -C "$RUNNER_TEMP"
+          source "$RUNNER_TEMP/oss-cad-suite/environment"
+          python3 -m pytest -q gateware
       - name: The enforcer builds for the RP2350, with no standard library
         run: cargo build -p tentzhen-enforcer --target thumbv8m.main-none-eabi --locked
       - name: Kani checks the enforcer's rules
