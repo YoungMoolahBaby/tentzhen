@@ -150,7 +150,10 @@ nextpnr-ecp5 and ecppack itself (amaranth at 90449f1e, `amaranth/vendor/_lattice
 and checked against a pinned sha256; its terms are not read, so it is not committed. Phase 5 adds
 LibreLane, "ASIC implementation flow infrastructure, successor to OpenLane" (Apache-2.0,
 librelane/librelane at 8494d4fe), whose README recommends installing it with Nix; Tiny Tapeout's
-local-hardening guide runs it in Docker (TinyTapeout/tinytapeout_www at ce1fff22).
+local-hardening guide runs it in Docker (TinyTapeout/tinytapeout_www at ce1fff22). It runs on
+GitHub's computers, in LibreLane's Docker image, as Tiny Tapeout's GDS action does, with the
+version and the action pinned, not on the lab computer (Jon, 2026-11-21; `prior-art.md`, "A
+chip's layout").
 
 ## Model
 
