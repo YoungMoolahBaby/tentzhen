@@ -343,6 +343,19 @@ inside the bitstream.
 **On the board:** the host command sends each image, reads back the 10 scores and the argmax, and
 logs any mismatch with the image's index. It also times round trips, for images per second.
 
+**Grading a training run** (decided by Claude at Jon's request, 2026-11-22). A run's weights and
+summary are committed, in `models/littlebit/runs/<run>/`: `weights.f32`, every parameter as
+little-endian float32, and `summary.json`, what was run and what it scored, with the weights'
+sha256. A Rust test in `crates/littlebit` re-scores the committed weights with its own arithmetic
+and checks the summary's counts, on MNIST the Quality Gate fetches and the test refuses unless
+each file is its pin (`models/littlebit/mnist.toml`). The gate does not retrain: GitHub's runners
+have no GPU, and a GPU's and a CPU's float products differ, so a retrain there would grade another
+model. Weights are committed because a grade must be re-checkable, and because rebuilding a run's
+bitstream needs them; they are small (E1's are 0.9 MB). Gateware tests stay cocotb, as the language
+policy has them, and a cocotb test becomes a referent as a Rust test is:
+`a_code_referent_names_code_that_exists` learns to find cocotb tests with the first one, and the
+Quality Gate runs them. A Rust test wrapping cocotb's results would only add a layer.
+
 ## Milestones
 
 Six phases, in order. Each ends on a gate that passes before the next starts. There are no dates.
@@ -386,7 +399,10 @@ Gate 0's echo goes through the same DAPLink serial port as the bench's Phase 1 "
 - [x] Write the i9's Amaranth platform: the clock, the LED and the UART, from the balls above
   (`gateware/boards/colorlight_i9.py`).
 - [x] Blinky, then the UART echo (Gate 0): `2026-11-22-i9-blinky` and `2026-11-22-i9-uart-echo`.
-- [ ] Train the E1 FP32 baseline and save it.
+- [x] Train the E1 FP32 baseline and save it (`models/littlebit/e1_fp32.py`, 2026-11-22): 9,831 of
+  the 10,000 test images, 98.31 %, `tested` by `e1_scores_what_its_summary_says`, which re-scores
+  the committed weights (`models/littlebit/runs/e1`). Six runs gave the same weights, byte for
+  byte.
 - [ ] Write the LittleBit layer in PyTorch and run r = 16.
 
 ## Experiments
@@ -397,7 +413,7 @@ Each cell fills as its run finishes, from the run's record or test.
 
 | run | model (784 → 256 → 128 → 10 unless noted) | variant | layer-1 total bpw | integer test acc (%) | LUTs | EBR blocks | Fmax (MHz) | images/s | status |
 |---|---|---|---|---|---|---|---|---|---|
-| E1 | FP32 dense (the ceiling) | computer only | 32 | | | | | | planned |
+| E1 | FP32 dense (the ceiling) | computer only | 32 | 98.31 (float) | | | | | done |
 | E2 | int8 dense | computer only | 8 | | | | | | planned |
 | E3 | binary dense, one scale per output | computer only | about 1.0 | | | | | | planned |
 | E4 | LittleBit r = 4 | A, hardwired | 0.062 | | | | | | planned |
@@ -434,9 +450,6 @@ questions, with r = 16–64 as the low end.
 - How the ℓ-scaled latents are cut to int16 (Model, "Not yet fixed").
 - Where the toolchain runs before the pinned toolchain of `roadmap.md` Phase 0 exists: installed on
   the lab computer, or not until then.
-- How a Python or cocotb test becomes a referent: `a_code_referent_names_code_that_exists` finds
-  Rust tests only, so checks 1 and 2 need a Rust test that reads their results, or a change to it.
-- Whether weights files are committed. Rebuilding a run's bitstream needs its weights file.
 - MNIST's terms of use, unread.
 - What follows MNIST toward the purpose: a SocialJax policy, from one of the three checkpoints its
   repo ships, is close in size (286,112 weights in its policy against this MLP's 234,752), but it
