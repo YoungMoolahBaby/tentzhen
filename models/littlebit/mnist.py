@@ -1,27 +1,37 @@
 """MNIST, fetched from the mirror torchvision uses and checked against pinned sha256s before use.
 
+The mirror and the pins are in mnist.toml beside this file, which crates/littlebit reads too.
 MNIST's terms of use are unread (docs/littlebit.md, "Open questions"), so its files are never
-committed: they live in a folder named on the command line. The pins are the sha256s of the files
-as fetched on 2026-11-22, whose md5s were the ones torchvision lists for them (pytorch/vision at
-4e0198c3, torchvision/datasets/mnist.py).
+committed: they live in a folder named on the command line.
 """
 
 import gzip
 import hashlib
 import sys
+import tomllib
 import urllib.request
 from pathlib import Path
 
 import numpy as np
 
-MIRROR = "https://ossci-datasets.s3.amazonaws.com/mnist/"
+FILES = (
+    "train-images-idx3-ubyte.gz",
+    "train-labels-idx1-ubyte.gz",
+    "t10k-images-idx3-ubyte.gz",
+    "t10k-labels-idx1-ubyte.gz",
+)
 
-SHA256 = {
-    "train-images-idx3-ubyte.gz": "440fcabf73cc546fa21475e81ea370265605f56be210a4024d2ca8f203523609",
-    "train-labels-idx1-ubyte.gz": "3552534a0a558bbed6aed32b30c495cca23d567ec52cac8be1a0730e8010255c",
-    "t10k-images-idx3-ubyte.gz": "8d422c7b0a1c1c79245a5bcf07fe86e33eeafee792b84584aec276f5a2dbc4e6",
-    "t10k-labels-idx1-ubyte.gz": "f7ae60f92e00ec6debd23a6088c31dbd2371eca3ffa0defaefb259924204aec6",
-}
+
+def _pins():
+    """mnist.toml, refused unless it has exactly its three keys and a pin for each of the files."""
+    path = Path(__file__).with_name("mnist.toml")
+    pins = tomllib.loads(path.read_text())
+    if set(pins) != {"mirror", "pinned", "sha256"} or set(pins["sha256"]) != set(FILES):
+        raise ValueError(f"{path.name}: not a mirror, a note and a sha256 for each of {FILES}")
+    return pins["mirror"], pins["sha256"]
+
+
+MIRROR, SHA256 = _pins()
 
 
 def fetch(folder):

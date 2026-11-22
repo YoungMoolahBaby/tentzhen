@@ -4,9 +4,11 @@ and its accuracy on the 10,000 test images. From this folder:
 
     uv run --locked python e1_fp32.py <mnist-folder> <out-folder>
 
-It writes e1_fp32.pt, the trained weights, and e1_fp32.json, what was run and what it scored, to
-the out folder. The model kept is the one after the last epoch: the test set is scored after each
-epoch to show the curve, and nothing is chosen by it.
+It writes two files to the out folder: weights.f32, every parameter as little-endian float32 one
+after another in the order and shapes summary.json's `layout` gives, and summary.json, what was
+run and what it scored, with the weights file's sha256. No pickle: crates/littlebit reads both and
+re-scores the weights (`e1_scores_what_its_summary_says`). The model kept is the one after the
+last epoch: the test set is scored after each epoch to show the curve, and nothing is chosen by it.
 
 What the recipe leaves open is chosen here: pixels as x / 255, batches of 128 in an order shuffled
 each epoch, PyTorch's default initialization, no weight decay, dropout or augmentation, the learning
@@ -49,13 +51,15 @@ def model():
     return nn.Sequential(*layers)
 
 
-def weights_sha256(net):
-    """The sha256 of every parameter's bytes, in the state dict's order, as float32 little-endian."""
-    h = hashlib.sha256()
+def write_weights(net, path):
+    """Writes every parameter, in the state dict's order, as little-endian float32, row-major in
+    PyTorch's shapes (a Linear's weight is out x in); gives the layout and the file's sha256."""
+    layout, data = [], bytearray()
     for name, t in net.state_dict().items():
-        h.update(name.encode())
-        h.update(t.detach().cpu().contiguous().numpy().astype("<f4").tobytes())
-    return h.hexdigest()
+        layout.append({"name": name, "shape": list(t.shape)})
+        data += t.detach().cpu().contiguous().numpy().astype("<f4").tobytes()
+    path.write_bytes(bytes(data))
+    return layout, hashlib.sha256(data).hexdigest()
 
 
 @torch.no_grad()
@@ -113,7 +117,7 @@ def main(mnist_folder, out_folder):
 
     out = Path(out_folder)
     out.mkdir(parents=True, exist_ok=True)
-    torch.save(net.state_dict(), out / "e1_fp32.pt")
+    layout, sha256 = write_weights(net, out / "weights.f32")
     summary = {
         "run": "E1",
         "model": "784 -> 256 -> 128 -> 10 MLP, dense FP32, ReLU between layers",
@@ -135,7 +139,8 @@ def main(mnist_folder, out_folder):
         "test_correct": curve[-1]["test_correct"],
         "test_images": len(xte),
         "curve": curve,
-        "weights_sha256": weights_sha256(net),
+        "layout": layout,
+        "weights_sha256": sha256,
         "seconds": seconds,
         "device": torch.cuda.get_device_name(0) if device == "cuda" else platform.processor(),
         "versions": {
@@ -146,7 +151,7 @@ def main(mnist_folder, out_folder):
             "numpy": np.__version__,
         },
     }
-    (out / "e1_fp32.json").write_text(json.dumps(summary, indent=2) + "\n")
+    (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(
         f"test accuracy {summary['test_correct'] / 100:.2f}%  "
         f"train {summary['train_correct']}/{len(xtr)}  "
