@@ -114,8 +114,9 @@ The balls are LiteX's for the i9 v7.2 (litex-boards at 53dc2ed0,
 Muse Lab's own repo, `src/amaranth_boards/colorlight_i9_r7_2.py` (wuxx/Colorlight-FPGA-Projects at
 016e5889, Apache-2.0): the chip, the 25 MHz clock on P3, the LED on L2, and the headers, with the
 UART's balls on its P5 connector and no UART resource of its own. Its comment says "Some of these
-still need verifying". Upstream amaranth-boards has no i9 (at f270d210). All of it is `unknown` on
-our board until Gate 0 blinks the LED and echoes a byte.
+still need verifying". Upstream amaranth-boards has no i9 (at f270d210). Ours,
+`gateware/boards/colorlight_i9.py`, has the clock, the LED and the UART. On our board the clock and
+the LED are `measured` (`2026-11-22-i9-blinky`); the UART is `unknown` until Gate 0 echoes a byte.
 
 **Loading the board is a flash.** Loading code into a board counts as flashing it, into SRAM too
 (`lab/targets.toml`). The i9 is not a lab target, so until a person lists it, every load needs a
@@ -374,10 +375,13 @@ Gate 0's echo goes through the same DAPLink serial port as the bench's Phase 1 "
 
 **First steps**
 
-- [ ] Read the i9's IDCODE on arrival (`builds/digitizer/v1.toml`).
+- [x] Read the i9's IDCODE on arrival (`builds/digitizer/v1.toml`): 0x41112043, lab log seq 1 of
+  2026-11-22. Its incoming-QA record is not written yet.
 - [ ] Settle where the toolchain runs (Open questions).
-- [ ] Write the i9's Amaranth platform: the clock, the LED and the UART, from the balls above.
-- [ ] Blinky, then the UART echo (Gate 0).
+- [x] Write the i9's Amaranth platform: the clock, the LED and the UART, from the balls above
+  (`gateware/boards/colorlight_i9.py`).
+- [ ] Blinky, then the UART echo (Gate 0). The blinky blinks the LED (`2026-11-22-i9-blinky`); the
+  echo is next.
 - [ ] Train the E1 FP32 baseline and save it.
 - [ ] Write the LittleBit layer in PyTorch and run r = 16.
 
