@@ -99,9 +99,31 @@ nextpnr takes `--45k --package CABGA381 --speed 6`. On arrival its JTAG IDCODE t
 siblings without reading the marking: 0x41112043 (`builds/digitizer/v1.toml`, walkthrough).
 
 **The board** is the i9 on any of the three extension boards (`scope.md`, "One i9, three extension
-boards"), with nothing wired to the headers. Jon has two i9s (2026-11-22). A flash's serial is the
-extension board's probe's, the same for either i9 in it, so the lab log does not yet say which i9 a
-load went to: Gate 0's records name the part and its revision, not the unit. It uses:
+boards"), with nothing wired to the headers. Jon has two i9s, each in an extension board of its
+own: his #1 and #2, here i9-1 and i9-2 (2026-11-22). The serial a load logs is the extension
+board's probe's, not the i9's, so each i9 stays in its own extension board:
+
+| unit | its probe's serial | port on the lab computer | IDCODE |
+|---|---|---|---|
+| i9-1 | `07000001006000573800001256313848a5a5a5a597969908` | COM3 | 0x41112043, LFE5U-45: lab log seq 9 of 2026-11-22 |
+| i9-2 | `07000001005400333800001256313848a5a5a5a597969908` | COM4 | 0x41112043, LFE5U-45: seq 10 |
+
+Gate 0 ran on i9-1: its loads, seq 2 and 4, name i9-1's probe. Gate 0's records name the part and
+its revision, not the unit.
+
+**Load with one board on USB.** openFPGALoader 1.2.0 can't choose between two identical CMSIS-DAP
+v1 probes:
+
+- With both plugged in and no index, it refuses: "more than one CMSIS-DAP v1 device".
+- `--cable-index` matches the probe's USB interface number, which is 3 on both, so it opens
+  whichever probe the system lists first. In seq 9 that was i9-1's.
+- Choosing by serial or by USB bus and device isn't supported for these probes.
+
+That is what 1.2.0 did here, and what its source at master does (`src/cmsisDAP.cpp`, read
+2026-11-22). So a load is made with only its own board plugged in. The serial it logs is the one
+openFPGALoader reports opening.
+
+The board uses:
 
 - **Clock:** 25 MHz on ball P3.
 - **LED:** ball L2, lit when driven low; the same ball is P2 pin 28.
