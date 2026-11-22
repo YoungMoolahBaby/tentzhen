@@ -253,11 +253,21 @@ impl Run {
         })
     }
 
-    /// The images the run's MLP gets right: layers `linears`, in order, each a Linear or a
-    /// LittleBit layer ([`Layer`]), with pixels entering as the recipe's `pixels` says. Between
-    /// layers, a ReLU, or for a LittleBit run its activations' grid. The predicted digit is the
-    /// first of the largest scores. Every product and sum is f32.
+    /// The images the run's MLP gets right ([`Run::predict`]).
     pub fn correct(&self, linears: &[usize], set: &Images) -> Result<usize, String> {
+        let digits = self.predict(linears, set)?;
+        Ok(digits
+            .iter()
+            .zip(&set.labels)
+            .filter(|&(&d, &l)| d == usize::from(l))
+            .count())
+    }
+
+    /// The digit the run's MLP predicts for each image: layers `linears`, in order, each a Linear
+    /// or a LittleBit layer ([`Layer`]), with pixels entering as the recipe's `pixels` says.
+    /// Between layers, a ReLU, or for a LittleBit run its activations' grid. The predicted digit
+    /// is the first of the largest scores. Every product and sum is f32.
+    pub fn predict(&self, linears: &[usize], set: &Images) -> Result<Vec<usize>, String> {
         let pixel: fn(u8) -> f32 = match self.summary.recipe.pixels.as_str() {
             "x / 255" => |p| p as f32 / 255.0,
             "floor(p / 2) / 128" => |p| (p >> 1) as f32 / 128.0,
@@ -284,7 +294,7 @@ impl Run {
             .iter()
             .map(|&i| self.layer(i))
             .collect::<Result<_, _>>()?;
-        let mut right = 0;
+        let mut digits = Vec::with_capacity(set.len());
         for k in 0..set.len() {
             let mut a: Vec<f32> = set.image(k).iter().map(|&p| pixel(p)).collect();
             for (j, layer) in layers.iter().enumerate() {
@@ -302,8 +312,8 @@ impl Run {
                 a = out;
             }
             let best = (0..a.len()).fold(0, |m, i| if a[i] > a[m] { i } else { m });
-            right += usize::from(best == usize::from(set.labels[k]));
+            digits.push(best);
         }
-        Ok(right)
+        Ok(digits)
     }
 }

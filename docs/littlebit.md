@@ -129,17 +129,24 @@ person's approval in the session, and every load is logged as a `firmware.flash`
 
 | piece | language | where |
 |---|---|---|
-| training, the rank sweep, the weight export | Python, PyTorch: the exception CLAUDE.md names for it | `models/littlebit/` |
-| the integer golden model | Rust | `crates/littlebit` |
+| training and the rank sweep | Python, PyTorch: the exception CLAUDE.md names for it | `models/littlebit/` |
+| the weight export and the integer golden model | Rust | `crates/littlebit` |
 | the layer engines, the weight-ROM generator, the UART, the top level | Amaranth | `gateware/littlebit/` |
 | tests of the gateware | cocotb on Verilator, run by pytest | `gateware/littlebit/tests/`, as the UART's are in `gateware/cores/tests/` |
 | the host: sends images, compares answers, logs, writes the record | Rust, a `tentzhen` command | `crates/tentzhen` |
 
 Each directory is made when its first real file arrives (`roadmap.md`, Phase 0).
 
-The pieces meet at one file: the exported weights (signs, scales, shifts and biases) as JSON. The
-golden model and the ROM generator both read it, so they cannot read different weights. The golden
-model also writes out the intermediate vectors and scores that the cocotb tests compare against.
+The pieces meet at one file: the exported weights (signs, scales, shifts and biases) as JSON,
+`models/littlebit/runs/<run>/integer.json`. The golden model and the ROM generator both read it, so
+they cannot read different weights. The golden model also writes out the intermediate vectors and
+scores that the cocotb tests compare against.
+
+The export is in Rust, not Python, although it's part of the model work (2026-11-22). It needs no
+PyTorch, only a run's committed weights and the training images. In Rust, the Quality Gate
+re-runs it and fails if the committed file differs (`r16_integer_json_is_what_the_exporter_writes`).
+It also measures each layer's latent shift with the golden model's own arithmetic, so the two can't
+disagree about it.
 
 Why these for this project: in Amaranth, the ROM generator is Python that builds the circuit from
 the JSON, with no Verilog text to template; Rust makes every integer widening explicit and stops a
@@ -242,7 +249,8 @@ leave open was chosen before the run:
   smallest that clamps nothing the started model gives on the training images. That is −5 after
   layer 1 and −4 after layer 2.
 - **What stays float.** The scales g, ℓ and h and the output layer stay float in training. The
-  exporter makes them integers, and check 1 measures what that costs.
+  exporter makes them integers, and check 1 measures what that costs. At r = 16 it costs nothing
+  (Verification, "Check 1 passes at r = 16").
 - **The training.** E1's settings: Adam at 1e-3, cosine decay to 0 over 20 epochs, batches of 128,
   seed 0, and cross-entropy on the labels. It doesn't distil from E1, as the paper does.
 
@@ -265,11 +273,41 @@ images.
 - Input pixels: uint8, 0–255 scaled to 0–127.
 - Scales g, ℓ and h: int8, with one power-of-two shift per vector. Bias: int32.
 - Accumulators: int32 everywhere (784 terms of int16 need at most 26 bits).
+- The ℓ-scaled latents: each V sum times its int8 ℓ, a product of at most 33 bits, then an
+  arithmetic right shift by the layer's latent shift, saturated to int16.
 - Between layers: arithmetic right shift, ReLU, clamp to uint8.
+- The output layer's weights: int8, with one power-of-two shift for the whole matrix.
 - Output: 10 int32 scores. The predicted digit is their argmax, computed on the FPGA.
 
-Not yet fixed: the U stage's width below assumes its r inputs are int16, so the ℓ-scaled latents are
-cut to 16 bits, and how is not in this list. Phase 1 fixes it with the golden model.
+Every right shift is arithmetic, so it rounds toward minus infinity, and nothing rounds to nearest
+while the network runs. The exporter rounds to nearest only once, when it turns the float weights
+into integers. The golden model follows these steps in `crates/littlebit/src/integer.rs`, and
+`a_littlebit_layer_computes_what_its_steps_say` works one small layer by hand against it.
+
+How the exporter chooses each value (`crates/littlebit/src/export.rs`):
+
+- **Scales and output weights.** Each vector, or the output matrix, gets the finest power-of-two
+  grid that holds its largest value in 127 steps
+  (`int8_takes_the_finest_grid_that_holds_the_largest`).
+- **Latent shifts.** Each layer's is the smallest that saturates no latent on the 60,000 training
+  images (`r16_integer_saturates_no_latent_on_the_training_images`). At r = 16 that is 10 for
+  layer 1 and 9 for layer 2. No latent saturates on the test images either
+  (`r16_integer_is_within_half_a_point_of_float`).
+- **Output shifts.** These put each layer's outputs on the grid it trained on, so an output is
+  ⌊y / 2^e⌋ clamped to 0–255, as in training.
+
+A layer's exponents add up to that grid, and `Network::parse` refuses a file where they don't
+(`an_integer_network_refuses_what_does_not_fit`). At r = 16, layer 1's add up to −5:
+
+- pixels −7
+- g −8
+- ℓ −7
+- latent shift +10
+- h −8
+- output shift +15
+
+The 33-bit ℓ product is wider than one of the ECP5's 18 × 18 multipliers takes. How the gateware
+forms it is Phase 2's to decide.
 
 ## Hardware architecture
 
@@ -351,6 +389,13 @@ from float to integer. Four models, three checks:
 | 2. the gateware | the golden model vs. Verilator, through cocotb | all 10 scores identical on all 10,000 test images | `tested` |
 | 3. the board | the golden model vs. the i9 over UART | the same digit and scores on at least 1,000 images | `measured` |
 
+**Check 1 passes at r = 16** (2026-11-22). Run from `models/littlebit/runs/r16/integer.json`, the
+integer golden model gets 9,717 of the 10,000 test images right. That is 4 more than the float
+model's 9,713, not fewer, and the two pick the same digit on 9,980 of the images. On the training
+images the integer model gets 58,809 right, against the float model's 58,798. Both are `tested`, by
+`r16_integer_is_within_half_a_point_of_float` and
+`r16_integer_saturates_no_latent_on_the_training_images`. So 8-bit scales were enough at this rank.
+
 What each figure of a run rests on: its accuracy is computed on the host, so `tested` at best; its
 LUTs, EBR blocks and Fmax are nextpnr's, `trusted` with the toolchain (`trusted-base.toml`,
 `fpga-toolchain`); its images per second and cycle counts are `measured`. Each board run is a
@@ -364,8 +409,8 @@ inside the bitstream.
   gateware: an arithmetic right shift (Rust's `>>` on a signed integer), and no rounding to nearest
   unless the gateware rounds too.
 - It reads the same exported JSON the ROM generator reads.
-- It can write out every intermediate vector for one image (after g, V, ℓ, U and h), to find a
-  mismatch layer by layer.
+- It gives every intermediate vector for one image, after g, V, ℓ, U and h (`integer::Trace`), to
+  find a mismatch layer by layer. Writing them out for the cocotb tests comes with those tests.
 
 **cocotb tests**
 
@@ -404,7 +449,8 @@ Phase 0 may run beside Phase 1: it needs only the board and the toolchain.
    from the computer echo back.
 2. **Phase 1, the model on the computer.** Train E1–E3 and the LittleBit sweep; write the golden
    model and the exporter. **Gate 1:** check 1 at r = 16, the integer model within 0.5 points of
-   float.
+   float. Check 1 passed on 2026-11-22 (Verification). E2, E3 and the sweep's other ranks are not
+   run yet.
 3. **Phase 2, gateware and simulation.** The weight-ROM generator, the layer engine and the top
    level; cocotb on Verilator. **Gate 2:** check 2, bit-exact on all 10,000 test images, and at most
    30,000 LUTs at 50 MHz in nextpnr's report. The first board run waits for this gate.
@@ -445,7 +491,9 @@ Gate 0's echo goes through the same DAPLink serial port as the bench's Phase 1 "
   `train_rank.py`, 2026-11-22): 9,713 of the 10,000 test images, 97.13 %, in float, `tested` by
   `r16_scores_what_its_summary_says`, which re-scores the committed weights
   (`models/littlebit/runs/r16`).
-- [ ] Write the exporter and the integer golden model, then run check 1 at r = 16 (Gate 1).
+- [x] Write the exporter and the integer golden model, then run check 1 at r = 16 (Gate 1)
+  (`crates/littlebit`, 2026-11-22): 9,717 of the 10,000 test images, 97.17 %, against the float
+  model's 97.13 %, `tested` by `r16_integer_is_within_half_a_point_of_float`.
 
 ## Experiments
 
@@ -460,7 +508,7 @@ Each cell fills as its run finishes, from the run's record or test.
 | E3 | binary dense, one scale per output | computer only | about 1.0 | | | | | | planned |
 | E4 | LittleBit r = 4 | A, hardwired | 0.062 | | | | | | planned |
 | E5 | LittleBit r = 8 | A, hardwired | 0.083 | | | | | | planned |
-| E6 | LittleBit r = 16 | A, hardwired | 0.125 | 97.13 (float) | | | | | trained in float |
+| E6 | LittleBit r = 16 | A, hardwired | 0.125 | 97.17 (float 97.13) | | | | | integer model done |
 | E7 | LittleBit r = 32 | A, hardwired | 0.209 | | | | | | planned |
 | E8 | LittleBit r = 64 | A, hardwired | 0.376 | | | | | | planned |
 | E9 | LittleBit r = 16 | B, block RAM | 0.125 | | | | | | planned |
@@ -532,9 +580,9 @@ questions, with r = 16–64 as the low end.
 
 ## Open questions
 
-- 8-bit or 16-bit scales? Start with 8, and switch only if check 1 fails (Jon's spec).
+- 8-bit or 16-bit scales? Start with 8, and switch only if check 1 fails (Jon's spec). At r = 16 it
+  passed with 8 (Verification); the lower ranks are not run yet.
 - A simple MLP first, or straight to a small convolutional network? This step assumes the MLP.
-- How the ℓ-scaled latents are cut to int16 (Model, "Not yet fixed").
 - Where the toolchain runs before the pinned toolchain of `roadmap.md` Phase 0 exists: installed on
   the lab computer, or not until then.
 - MNIST's terms of use, unread.
