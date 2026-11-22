@@ -150,7 +150,10 @@ nextpnr-ecp5 and ecppack itself (amaranth at 90449f1e, `amaranth/vendor/_lattice
 and checked against a pinned sha256; its terms are not read, so it is not committed. Phase 5 adds
 LibreLane, "ASIC implementation flow infrastructure, successor to OpenLane" (Apache-2.0,
 librelane/librelane at 8494d4fe), whose README recommends installing it with Nix; Tiny Tapeout's
-local-hardening guide runs it in Docker (TinyTapeout/tinytapeout_www at ce1fff22).
+local-hardening guide runs it in Docker (TinyTapeout/tinytapeout_www at ce1fff22). It runs on
+GitHub's computers, in LibreLane's Docker image, as Tiny Tapeout's GDS action does, with the
+version and the action pinned, not on the lab computer (Jon, 2026-11-21; `prior-art.md`, "A
+chip's layout").
 
 ## Model
 
@@ -359,8 +362,8 @@ Phase 0 may run beside Phase 1: it needs only the board and the toolchain.
    (`librelane/flows/classic.py`) for a standard-cell process (`sky130A` in its README's example).
    The ECP5's own blocks go: no PLL, block RAM or multipliers, so it is Variant A only, and the
    cocotb layer test runs against the Verilog it lays out. A tile is "about 160x100 um", "enough for
-   about 1000 digital logic gates" (Tiny Tapeout's FAQ, of its runs TT04 to TT10; the current runs'
-   size is not read), with 8 inputs, 8 outputs and 8 bidirectional pins besides the clock and reset
+   about 1000 digital logic gates" (Tiny Tapeout's FAQ, of its runs TT04 to TT10; a sky130A tile is
+   now 161.00 × 111.52 µm, `prior-art.md`, "A chip's layout"), with 8 inputs, 8 outputs and 8 bidirectional pins besides the clock and reset
    (same FAQ), so the layer takes its inputs a few bits at a time. It costs nothing. Its figures
    rest on LibreLane, OpenROAD and the process kit, which `trusted-base.toml` does not list yet.
    **Gate 5:** LibreLane finishes the layer with its own checks passing, and its cells and area per
