@@ -1,8 +1,8 @@
 # models/littlebit
 
 Project #3's model training, in PyTorch (`docs/littlebit.md`, "Languages and layout"). E1, the
-FP32 baseline, is the first run; the LittleBit layer comes next (`docs/littlebit.md`, "First
-steps").
+FP32 baseline, came first. The LittleBit layer at r = 16 came next (`docs/littlebit.md`, "The
+first LittleBit run").
 
 ## Running E1
 
@@ -24,6 +24,20 @@ unchecked:
 
     $env:MNIST_DIR = "D:\tentzhen-data\mnist"
     cargo test -p tentzhen-littlebit
+
+## Running the LittleBit layer
+
+`littlebit.py` is the layer, written from the paper's text. `train_rank.py` trains the MLP with
+its two hidden layers made LittleBit layers at one rank. It starts from E1's committed weights in
+`runs/e1`:
+
+    uv run --locked python train_rank.py D:\tentzhen-data\mnist 16 runs\r16
+
+It writes the same two files as E1, to `runs/r16`. On the lab computer it took about 50 s and got
+9,713 of the 10,000 test images right (97.13 %, 1.18 points under E1). Three runs gave the same
+weights, byte for byte (2026-11-22). `r16_scores_what_its_summary_says` re-scores them, with the
+same `MNIST_DIR`. Where the recipe is silent, what the run chose is in `train_rank.py`'s docstring
+and in `docs/littlebit.md`, "The first LittleBit run".
 
 ## Setting it up
 

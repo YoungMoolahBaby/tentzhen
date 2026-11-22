@@ -1,7 +1,7 @@
 [package]
 name = "tentzhen-littlebit"
 version = "0.0.0"
-description = "Project #3's golden model: MNIST read by its pins, and a training run's committed weights, scored"
+description = "Project #3's golden model: MNIST read by its pins, and a training run's committed weights, dense or LittleBit, scored"
 publish = false
 edition.workspace = true
 license.workspace = true

@@ -227,6 +227,39 @@ one scale per output).
 The paper's code (SamsungLabs/LittleBit at 42d658b) is under CC BY-NC 4.0, for non-commercial use
 only, so Tentzhen writes its layer from the paper and copies none of that code.
 
+**The first LittleBit run, r = 16** (`models/littlebit/littlebit.py` and `train_rank.py`,
+2026-11-22). It runs steps 2–4 from E1's committed weights. Whatever the recipe and the paper
+leave open was chosen before the run:
+
+- **Dual-SVID's splits.** The paper doesn't say how W's singular values are shared between U′ and
+  V′, or how each rank-one fit is split between its two vectors. Here each side takes the square
+  root, both times. U and V start as U′ and V′, as the paper has them.
+- **The sign.** +1 where the latent weight is ≥ 0, −1 elsewhere, with step 3's straight-through
+  gradient rather than SmoothSign.
+- **The input.** Pixels enter as ⌊p / 2⌋ / 128, the 0–127 inputs of "Fixed-point formats".
+- **The activations.** Each hidden layer's outputs are uint8 times 2^e: ⌊y / 2^e⌋ clamped to
+  0–255, the same as the hardware's shift, ReLU and clamp. Each e is fixed before training: the
+  smallest that clamps nothing the started model gives on the training images. That is −5 after
+  layer 1 and −4 after layer 2.
+- **What stays float.** The scales g, ℓ and h and the output layer stay float in training. The
+  exporter makes them integers, and check 1 measures what that costs.
+- **The training.** E1's settings: Adam at 1e-3, cosine decay to 0 over 20 epochs, batches of 128,
+  seed 0, and cross-entropy on the labels. It doesn't distil from E1, as the paper does.
+
+The run gets 9,713 of the 10,000 test images right, 97.13 %, which is 1.18 points under E1. It also
+gets 58,798 of the 60,000 training images. Both counts are `tested` by
+`r16_scores_what_its_summary_says`, which re-scores the committed weights
+(`models/littlebit/runs/r16`) with the signs and the uint8 grid in its own f32 arithmetic. Three
+runs gave the same weights, byte for byte, in about 50 s each on the lab computer's GPU (each
+summary's `seconds`).
+
+Before any fine-tuning, the network as Dual-SVID started it got 4,710 test images right. That is
+PyTorch's count in the summary, and no test re-checks it. In the summary's curve, the test count
+moved between 9,418 and 9,686 over the first 19 epochs, and rose as the learning rate fell to 0.
+Whether a smaller learning rate or the paper's distillation would do better is `unknown`. A run
+that chooses between them should choose on images held out of the training set, not on the test
+images.
+
 **Fixed-point formats,** fixed at export and the same in the golden model and the gateware:
 
 - Input pixels: uint8, 0–255 scaled to 0–127.
@@ -408,7 +441,11 @@ Gate 0's echo goes through the same DAPLink serial port as the bench's Phase 1 "
   the 10,000 test images, 98.31 %, `tested` by `e1_scores_what_its_summary_says`, which re-scores
   the committed weights (`models/littlebit/runs/e1`). Six runs gave the same weights, byte for
   byte.
-- [ ] Write the LittleBit layer in PyTorch and run r = 16.
+- [x] Write the LittleBit layer in PyTorch and run r = 16 (`models/littlebit/littlebit.py` and
+  `train_rank.py`, 2026-11-22): 9,713 of the 10,000 test images, 97.13 %, in float, `tested` by
+  `r16_scores_what_its_summary_says`, which re-scores the committed weights
+  (`models/littlebit/runs/r16`).
+- [ ] Write the exporter and the integer golden model, then run check 1 at r = 16 (Gate 1).
 
 ## Experiments
 
@@ -423,7 +460,7 @@ Each cell fills as its run finishes, from the run's record or test.
 | E3 | binary dense, one scale per output | computer only | about 1.0 | | | | | | planned |
 | E4 | LittleBit r = 4 | A, hardwired | 0.062 | | | | | | planned |
 | E5 | LittleBit r = 8 | A, hardwired | 0.083 | | | | | | planned |
-| E6 | LittleBit r = 16 | A, hardwired | 0.125 | | | | | | planned |
+| E6 | LittleBit r = 16 | A, hardwired | 0.125 | 97.13 (float) | | | | | trained in float |
 | E7 | LittleBit r = 32 | A, hardwired | 0.209 | | | | | | planned |
 | E8 | LittleBit r = 64 | A, hardwired | 0.376 | | | | | | planned |
 | E9 | LittleBit r = 16 | B, block RAM | 0.125 | | | | | | planned |
