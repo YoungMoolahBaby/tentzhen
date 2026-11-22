@@ -61,7 +61,13 @@ class Pair(Elaboratable):
 
 def test_uart(tmp_path):
     pair = Pair()
-    run(pair, pair.ports(), "uart_pair", "test_uart", tmp_path)
+    tests = [
+        "uart_carries_every_byte_back_to_back",
+        "uart_tx_holds_each_bit_a_divisor_and_its_stop_bit_a_full_bit",
+        "uart_rx_drops_a_byte_whose_stop_bit_is_low",
+        "uart_rx_ignores_a_glitch_shorter_than_half_a_bit",
+    ]
+    run(pair, pair.ports(), "uart_pair", "test_uart", tests, tmp_path)
 
 
 async def start(dut):

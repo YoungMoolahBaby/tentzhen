@@ -77,7 +77,7 @@ jobs:
           echo "da62ff9cd16a69fc23607f3430459a3ca405561063e93910bf71d99012bb59e2  $f" | sha256sum -c -
           tar xzf "$f" -C "$RUNNER_TEMP"
           source "$RUNNER_TEMP/oss-cad-suite/environment"
-          python3 -m pytest -q gateware
+          python3 -m pytest -q -rA gateware
       - name: The enforcer builds for the RP2350, with no standard library
         run: cargo build -p tentzhen-enforcer --target thumbv8m.main-none-eabi --locked
       - name: Kani checks the enforcer's rules

@@ -27,7 +27,9 @@ def test_uart_echo(tmp_path):
         "led": SimpleNamespace(o=led),
     }
     platform = SimpleNamespace(request=lambda name, number: pins[name])
-    run(UARTEcho(), [uart_rx, uart_tx, led], "uart_echo", "test_uart_echo", tmp_path, platform)
+    tests = ["uart_echo_sends_back_every_byte_at_115200_baud"]
+    ports = [uart_rx, uart_tx, led]
+    run(UARTEcho(), ports, "uart_echo", "test_uart_echo", tests, tmp_path, platform)
 
 
 async def cycles(dut, n):
