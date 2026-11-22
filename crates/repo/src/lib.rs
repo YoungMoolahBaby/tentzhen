@@ -544,6 +544,50 @@ mod tests {
         }
     }
 
+    /// Every text file is LF in the index and in the checkout the test runs in, so the bytes the
+    /// lab log's chain, the Quality Gate's steps and the tests compare are the bytes committed. Git
+    /// for Windows turns `core.autocrlf` on in its own config, and without `.gitattributes`'s
+    /// `eol=lf` that checks out every line with CRLF. Only the fonts' licenses are kept byte for
+    /// byte as committed (`-text`).
+    #[test]
+    fn every_text_file_checks_out_with_lf() {
+        let out = Command::new("git")
+            .args(["ls-files", "--eol", "-z"])
+            .current_dir(root())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git ls-files --eol");
+        let listing = String::from_utf8(out.stdout).unwrap();
+        let (mut files, mut kept) = (0, 0);
+        for entry in listing.split_terminator('\0') {
+            // `i/<eol> w/<eol> attr/<attributes>`, a tab, and the path.
+            let (eol, path) = entry.split_once('\t').unwrap();
+            let mut fields = eol.split_whitespace();
+            let (index, tree) = (fields.next().unwrap(), fields.next().unwrap());
+            let attr = fields.collect::<Vec<_>>().join(" ");
+            files += 1;
+            if attr == "attr/-text" {
+                kept += 1;
+                assert!(
+                    path.starts_with("site/fonts/OFL-") && path.ends_with(".txt"),
+                    "{path} is kept as it is: only the fonts' licenses are"
+                );
+                continue;
+            }
+            assert_eq!(attr, "attr/text=auto eol=lf", "{path}");
+            for (side, eol) in [("index", index), ("checkout", tree)] {
+                assert!(
+                    !eol.ends_with("/crlf") && !eol.ends_with("/mixed"),
+                    "{path} has {eol} line endings in the {side}: LF only"
+                );
+            }
+        }
+        assert!(
+            files >= 100 && kept == 3,
+            "found {files} files, {kept} kept"
+        );
+    }
+
     /// The Kani harnesses and tests in the workspace, by package name.
     #[derive(Default)]
     struct Code {
