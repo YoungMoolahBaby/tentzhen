@@ -151,7 +151,8 @@ def main(mnist_folder, out_folder):
             "numpy": np.__version__,
         },
     }
-    (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    # LF on every system: the repo keeps text files LF (.gitattributes).
+    (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", newline="\n")
     print(
         f"test accuracy {summary['test_correct'] / 100:.2f}%  "
         f"train {summary['train_correct']}/{len(xtr)}  "
