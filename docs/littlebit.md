@@ -145,7 +145,10 @@ test on an overflow, which is what "integer-exact" asks of the golden model; and
 lab log and the records, which are Rust already.
 
 **Toolchain:** Yosys, nextpnr-ecp5, Project Trellis, Verilator, cocotb and Amaranth, pinned with the
-rest (`roadmap.md`, Phase 0), plus PyTorch and openFPGALoader. Amaranth's ECP5 platform runs Yosys,
+rest (`roadmap.md`, Phase 0), plus PyTorch and openFPGALoader. Until that pinned toolchain exists,
+training runs in `models/littlebit/`'s uv environment: Python 3.12.15, PyTorch 2.15.0 (its CUDA
+13.2 build on Windows and Linux) and NumPy 2.5.5, every package pinned by its `uv.lock`, and
+`every_python_dependency_is_pinned` holds the pins it names. Amaranth's ECP5 platform runs Yosys,
 nextpnr-ecp5 and ecppack itself (amaranth at 90449f1e, `amaranth/vendor/_lattice.py`). nextpnr's
 `--report` writes a "timing and utilization report in JSON format" (nextpnr at 15b77f5f,
 `common/kernel/command.cc`), the source of each run's LUT, EBR and Fmax figures. MNIST is fetched
