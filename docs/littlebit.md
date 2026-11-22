@@ -130,7 +130,7 @@ person's approval in the session, and every load is logged as a `firmware.flash`
 | training, the rank sweep, the weight export | Python, PyTorch: the exception CLAUDE.md names for it | `models/littlebit/` |
 | the integer golden model | Rust | `crates/littlebit` |
 | the layer engines, the weight-ROM generator, the UART, the top level | Amaranth | `gateware/littlebit/` |
-| tests of the gateware | cocotb on Verilator | `gateware/littlebit/tests/` |
+| tests of the gateware | cocotb on Verilator, run by pytest | `gateware/littlebit/tests/`, as the UART's are in `gateware/cores/tests/` |
 | the host: sends images, compares answers, logs, writes the record | Rust, a `tentzhen` command | `crates/tentzhen` |
 
 Each directory is made when its first real file arrives (`roadmap.md`, Phase 0).
@@ -335,7 +335,9 @@ inside the bitstream.
 **cocotb tests**
 
 - Unit tests per block: UART loopback, one accumulator bank, one weight-ROM read against its
-  exported column.
+  exported column. The UART's are written (`gateware/cores/tests/test_uart.py`), with one of the
+  board's echo design (`gateware/bringup/tests/test_uart_echo.py`); `docs/architecture.md`, "Rules",
+  lists them.
 - A layer test: one LittleBit layer alone against the golden model, on random uint8 vectors.
 - A full-network test: 100 images on every commit, all 10,000 before any board run.
 - Waveforms (FST) kept only for failing tests.
@@ -352,9 +354,10 @@ each file is its pin (`models/littlebit/mnist.toml`). The gate does not retrain:
 have no GPU, and a GPU's and a CPU's float products differ, so a retrain there would grade another
 model. Weights are committed because a grade must be re-checkable, and because rebuilding a run's
 bitstream needs them; they are small (E1's are 0.9 MB). Gateware tests stay cocotb, as the language
-policy has them, and a cocotb test becomes a referent as a Rust test is:
-`a_code_referent_names_code_that_exists` learns to find cocotb tests with the first one, and the
-Quality Gate runs them. A Rust test wrapping cocotb's results would only add a layer.
+policy has them, and a cocotb test is a referent as a Rust test is, named `gateware <name>`:
+`a_code_referent_names_code_that_exists` finds them, and the Quality Gate runs them on Verilator
+from OSS CAD Suite's Linux build of 2026-11-21, the lab computer's day. A Rust test wrapping
+cocotb's results would only add a layer.
 
 ## Milestones
 

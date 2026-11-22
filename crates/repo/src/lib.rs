@@ -124,6 +124,7 @@ mod tests {
                 }
             }
         }
+        let cocotb = cocotb_tests();
         let (mut tests, mut paths) = (0, 0);
         for (i, token) in now.split('`').enumerate() {
             if i % 2 == 0 {
@@ -136,7 +137,7 @@ mod tests {
             if is_name {
                 tests += 1;
                 assert!(
-                    source.contains(&format!("fn {token}()")),
+                    source.contains(&format!("fn {token}()")) || cocotb.contains(token),
                     "docs/architecture.md names the test {token}, which does not exist"
                 );
             } else if token.contains('<') {
@@ -656,8 +657,43 @@ mod tests {
         tests: BTreeMap<String, BTreeSet<String>>,
     }
 
+    /// The cocotb tests under gateware/: in each `test_*.py`, the functions marked
+    /// `@cocotb.test(...)`, through any other decorators between the mark and the `async def`.
+    /// The gateware's tests are cocotb, as CLAUDE.md's language policy has them, so a referent
+    /// names one as `gateware <name>` (docs/littlebit.md, "Grading a training run").
+    fn cocotb_tests() -> BTreeSet<String> {
+        let mut found = BTreeSet::new();
+        let mut stack = vec![root().join("gateware")];
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if !(name.starts_with("test_") && name.ends_with(".py")) {
+                    continue;
+                }
+                let mut pending = false;
+                for line in fs::read_to_string(&path).unwrap().lines() {
+                    let line = line.trim();
+                    if line.starts_with("@cocotb.test(") {
+                        pending = true;
+                    } else if let (true, Some(rest)) = (pending, line.strip_prefix("async def ")) {
+                        found.insert(rest.split('(').next().unwrap().to_string());
+                        pending = false;
+                    } else if !line.starts_with('@') {
+                        pending = false;
+                    }
+                }
+            }
+        }
+        found
+    }
+
     /// Reads every member's sources for functions marked `#[kani::proof]` or `#[test]`, through
-    /// any other attributes between the mark and the `fn`.
+    /// any other attributes between the mark and the `fn`; and the cocotb tests, as `gateware`'s.
     fn code() -> Code {
         let mut code = Code::default();
         for m in members() {
@@ -700,6 +736,7 @@ mod tests {
                 }
             }
         }
+        code.tests.insert("gateware".into(), cocotb_tests());
         code
     }
 
@@ -847,6 +884,16 @@ mod tests {
                 "names no test",
             ),
             (
+                "test",
+                "gateware uart_never_written".into(),
+                "names no test",
+            ),
+            (
+                "test",
+                "tentzhen-enforcer uart_carries_every_byte_back_to_back".into(),
+                "names no test",
+            ),
+            (
                 "proof",
                 "gateware/none.sby; SymbiYosys 0.60".into(),
                 "naming a file",
@@ -868,6 +915,21 @@ mod tests {
         assert_eq!(
             referent_problem("proof", "Cargo.toml; a tool 1.0", &code, &kani),
             None
+        );
+        // A cocotb test is named as `gateware <name>`.
+        assert_eq!(
+            referent_problem(
+                "test",
+                "gateware uart_carries_every_byte_back_to_back",
+                &code,
+                &kani
+            ),
+            None
+        );
+        assert!(
+            code.tests["gateware"].len() >= 5,
+            "{:?}",
+            code.tests["gateware"]
         );
     }
 }
