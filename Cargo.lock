@@ -1249,6 +1249,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tentzhen-littlebit"
+version = "0.0.0"
+dependencies = [
+ "flate2",
+ "serde",
+ "serde_json",
+ "sha2",
+ "toml",
+]
+
+[[package]]
 name = "tentzhen-records"
 version = "0.0.0"
 dependencies = [

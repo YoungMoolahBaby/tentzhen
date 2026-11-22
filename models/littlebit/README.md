@@ -7,16 +7,23 @@ steps").
 ## Running E1
 
 Fetch MNIST into a folder outside the repo, and train. `mnist.py` refuses any file whose sha256 is
-not its pin; MNIST's terms are unread, so its files are never committed.
+not its pin in `mnist.toml`; MNIST's terms are unread, so its files are never committed.
 
     uv run --locked python mnist.py D:\tentzhen-data\mnist
-    uv run --locked python e1_fp32.py D:\tentzhen-data\mnist D:\tentzhen-runs\littlebit\e1-fp32
+    uv run --locked python e1_fp32.py D:\tentzhen-data\mnist runs\e1
 
-The second writes `e1_fp32.pt` (the weights) and `e1_fp32.json` (what was run and what it scored).
-On the lab computer it took 16 s and scored 9,831 of the 10,000 test images (98.31 %). Three runs,
-two of them from the committed script, gave the same weights to the byte (2026-11-22). That is
-what the script printed, not yet a grade: nothing in the repo re-checks it (`docs/littlebit.md`,
-"Open questions").
+The second writes `runs/e1/weights.f32` (every parameter, as little-endian float32) and
+`runs/e1/summary.json` (what was run and what it scored, with the weights' sha256), which are
+committed. On the lab computer it took 16 s and got 9,831 of the 10,000 test images right
+(98.31 %); six runs gave the same weights, byte for byte (2026-11-22).
+
+That figure is `tested`: `e1_scores_what_its_summary_says`, in `crates/littlebit`, re-scores the
+committed weights with its own arithmetic, and the Quality Gate runs it. To run it yourself, point
+`MNIST_DIR` at the folder MNIST is in; the tests that need MNIST fail without it, rather than pass
+unchecked:
+
+    $env:MNIST_DIR = "D:\tentzhen-data\mnist"
+    cargo test -p tentzhen-littlebit
 
 ## Setting it up
 

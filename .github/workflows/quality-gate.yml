@@ -46,7 +46,24 @@ jobs:
           restore-keys: cargo-${{ runner.os }}-
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # MNIST for crates/littlebit's tests, which re-score the committed training runs. Its terms
+      # are unread, so it is fetched, never committed; the tests refuse a file that is not its pin
+      # in models/littlebit/mnist.toml, so this step only downloads.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/mnist
+          key: mnist-${{ hashFiles('models/littlebit/mnist.toml') }}
+      - name: Fetch MNIST from the mirror models/littlebit/mnist.toml names
+        run: |
+          mkdir -p "$RUNNER_TEMP/mnist"
+          mirror=$(sed -n 's/^mirror = "\(.*\)"$/\1/p' models/littlebit/mnist.toml)
+          for f in $(sed -n 's/^"\([a-z0-9-]*\.gz\)" = .*/\1/p' models/littlebit/mnist.toml); do
+            [ -f "$RUNNER_TEMP/mnist/$f" ] || curl -sSfL -o "$RUNNER_TEMP/mnist/$f" "$mirror$f"
+          done
+          ls -l "$RUNNER_TEMP/mnist"
       - run: cargo test --workspace --locked
+        env:
+          MNIST_DIR: ${{ runner.temp }}/mnist
       - name: The enforcer builds for the RP2350, with no standard library
         run: cargo build -p tentzhen-enforcer --target thumbv8m.main-none-eabi --locked
       - name: Kani checks the enforcer's rules
