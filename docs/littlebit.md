@@ -34,7 +34,8 @@ What the two run, read from their sources:
 Hardwired weights are constants of the circuit. A chip built this way runs a network that is
 already trained: new weights are a new bitstream on the i9, or a new chip in silicon, and training
 stays on a computer. So this step tests the inference half: how accuracy, logic and clock speed
-move as the bits per weight fall. Whether what it finds carries from a 234,752-weight network to the
+move as the bits per weight fall. How much a chip with hardwired signs could still learn, by
+changing only its scales, is a first experiment of its own ("Training with the signs fixed"). Whether what it finds carries from a 234,752-weight network to the
 ones above is `unknown` until a later step runs one of them.
 
 This step drives nothing but a serial port and an LED. What safety first means for a robot is not
@@ -1070,6 +1071,10 @@ Gate 0's echo goes through the same DAPLink serial port as the bench's Phase 1 "
   logic cells against sign bits (`crates/littlebit/src/plots.rs`, 2026-11-23). The table's
   accuracies are `tested` against the runs, and the plots against the table (Experiments, "The
   two plots"). Gate 4 passes. Next: Phase 5, a hardwired layer laid out as a chip.
+- [x] At Jon's request, fine-tune r16 with its signs fixed and only its scales free, on MNIST,
+  inverted MNIST and Fashion-MNIST (`models/littlebit/train_frozen.py`, 2026-11-23). On
+  Fashion-MNIST the scales get about three quarters of the way from training the output layer
+  alone to training everything ("Training with the signs fixed").
 
 ## Experiments
 
@@ -1125,6 +1130,70 @@ and the table above gives them too.
 - **E8 is the only one past Gate 2's 30,000 cells,** and the only one that misses 50 MHz.
   Timing stops the rank before the cells do: E11, r = 42, the largest that closes, takes 24,934
   ("E11, the largest rank that fits").
+
+## Training with the signs fixed
+
+Jon asked whether this helps training as well as inference (2026-11-23). Hardwired weights can't
+be trained where they are: in Variant A, a new weight is a new bitstream. But a LittleBit layer
+keeps its magnitudes apart from its signs, in the scale vectors g, ℓ and h. A chip could keep
+those, the biases and the output layer in registers or block RAM, and its signs in logic. At
+r = 16 that is 3,130 values beside 22,784 signs. This experiment asks how much such a chip could
+learn by changing only those (`models/littlebit/train_frozen.py`, 2026-11-23).
+
+All of it was fixed before the first run. Each run starts from r16 as committed and keeps r16's
+activation exponents, as the hardware's shifts are fixed. It trains by r16's recipe, unchanged.
+There are three tasks:
+
+- **MNIST,** the control.
+- **MNIST inverted,** each pixel p made 255 − p: the same digits, light on dark.
+- **Fashion-MNIST** (zalandoresearch/fashion-mnist, MIT licence, read 2026-11-23): MNIST's
+  format, with 10 kinds of clothing in place of the digits. Its four files came from the repo's
+  `data/fashion`, matched the MD5s its README lists, and are pinned by sha256 in the script. Like
+  MNIST's, they are never committed.
+
+There are four regimes, by what may train:
+
+- **nothing**;
+- **the output layer** alone, 1,290 values;
+- **the scales,** each hidden layer's g, ℓ, h and bias and the output layer, 3,130 values, with
+  every sign fixed;
+- **everything,** 25,914 values, so signs can flip. A new bitstream could hold that.
+
+| task | nothing trained | the output layer | the scales, signs fixed | everything | signs flipped by "everything", of 22,784 |
+|---|---|---|---|---|---|
+| MNIST | 9,713 | 9,730 | 9,731 | 9,707 | 1,978 |
+| MNIST, inverted | 108 | 8,771 | 9,024 | 9,526 | 3,392 |
+| Fashion-MNIST | 340 | 7,269 | 8,301 | 8,667 | 4,813 |
+
+The figures are test images right, of 10,000, in float. They are PyTorch's counts on the GPU, and
+no test re-checks them. Two runs of each gave the same weights, byte for byte, in 22 to 54 s each.
+Untrained, the script's r16 is the committed one: its weights' sha256 is r16's, and it gets r16's
+9,713.
+
+What it shows:
+
+- **Fixed signs still learn much of a new task.** On Fashion-MNIST, the scales get 8,301 test
+  images right. That is 1,032 more than the output layer alone and 366 fewer than training
+  everything, about three quarters of the way from one to the other. On inverted MNIST they get
+  253 more than the output layer and 502 fewer than everything, a third of the way.
+- **On inverted MNIST, that is the training's limit, not the scales'.** The inverted input is
+  127/128 − x, since ⌊(255 − p)/2⌋ = 127 − ⌊p/2⌋. So negating layer 1's g and moving its bias makes
+  the network r16 on MNIST again, with every sign as it was. Built that way, with nothing trained,
+  it gets 9,713 of the inverted test images right, and picks the same digit as r16 does on MNIST
+  for all 10,000 (`train_frozen.py <mnist> <fashion> inverted built <out>`). Training from r16
+  found 9,024. The network built here has every g of layer 1 on the far side of zero from r16's.
+  Whether another recipe would reach it, or one as good, is `unknown`.
+- **The control stays put.** On MNIST, no regime moves r16 by more than 18 images.
+- **Training everything flips about a fifth of the signs** on Fashion-MNIST, 4,813 of 22,784, and
+  that is what buys the last 366 images. A chip whose signs are fixed gives those up.
+
+What it doesn't show:
+
+- **The scales are floats here.** On the chip they would be int8, and the biases int32. What that
+  costs is `unknown` until an export measures it.
+- **How a chip would compute the gradients** is not designed: a backward pass through U and V for
+  each training image, beside the forward pass this gateware runs.
+- **Whether this holds beyond MNIST-sized networks** is `unknown`.
 
 ## After MNIST: Clean Up's policy
 

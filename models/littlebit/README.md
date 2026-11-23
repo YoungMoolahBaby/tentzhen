@@ -80,6 +80,21 @@ byte (2026-11-23). `e10_scores_what_its_summaries_say` re-scores both, with the 
 E10 is exported as r16 is, below. Giving the two scripts a shape left E1, r16 and E2 as they were:
 a run of each after the change gave its committed `weights.f32`, byte for byte.
 
+## Training with the signs fixed
+
+`train_frozen.py` starts from r16 and fine-tunes it on a task with only some parameters free: none,
+the output layer, the scales (every sign fixed), or everything (`docs/littlebit.md`, "Training with
+the signs fixed"). Fashion-MNIST is one of its tasks: fetch its four files from
+zalandoresearch/fashion-mnist's `data/fashion` into a folder outside the repo, and the script checks
+each against its sha256. For example:
+
+    uv run --locked python train_frozen.py D:\tentzhen-data\mnist D:\tentzhen-data\fashion-mnist fashion scales D:\tentzhen-build\frozen\fashion-scales
+
+It writes a summary.json, what was free and what it scored, with the weights' sha256, to the out
+folder. Its runs aren't committed, and no test re-scores them: their counts are PyTorch's. On the
+lab computer each took 22 to 54 s, and two runs of each gave the same weights, byte for byte
+(2026-11-23).
+
 ## The integer export
 
 The hardware doesn't run float. The exporter turns a LittleBit run into integers: int8 scales,
