@@ -39,6 +39,12 @@ weights, byte for byte (2026-11-22). `r16_scores_what_its_summary_says` re-score
 same `MNIST_DIR`. Where the recipe is silent, what the run chose is in `train_rank.py`'s docstring
 and in `docs/littlebit.md`, "The first LittleBit run".
 
+The rest of the sweep runs the same way, with only the rank changed: `4`, `8`, `32` and `64`
+write `runs/r4`, `runs/r8`, `runs/r32` and `runs/r64`. Each took about a minute, and two runs at
+each rank gave the same weights, byte for byte (2026-11-23). In float they got 8,802, 9,464,
+9,772 and 9,814 of the test images right, which `the_sweep_scores_what_its_summaries_say`
+re-scores. Each is exported as r16 is, below.
+
 ## Running the baselines
 
 `train_baseline.py` trains E2 and E3, the baselines between E1 and the LittleBit sweep. It takes

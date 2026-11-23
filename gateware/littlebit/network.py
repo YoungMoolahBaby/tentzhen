@@ -1,7 +1,7 @@
 """The whole network on the board, Gate 2's top level (docs/littlebit.md, "Hardware
-architecture"): r16, its integers hardwired into logic (Variant A), run by `LittleBitNetwork`
-(gateware/cores/littlebit.py) at 50 MHz from the PLL, fed and read over the UART at 115,200 baud.
-The LED blinks as the blinky's does, at 50 MHz.
+architecture"): r16, or another run's integer network, its integers hardwired into logic
+(Variant A), run by `LittleBitNetwork` (gateware/cores/littlebit.py) at 50 MHz from the PLL, fed
+and read over the UART at 115,200 baud. The LED blinks as the blinky's does, at 50 MHz.
 
 The computer sends a frame: the byte 0xA5, then an image's 784 pixels, one byte each, as MNIST
 stores them; the network shifts them itself. The design answers 0x5A; the 10 scores, each an
@@ -22,7 +22,11 @@ This builds the bitstream and nothing more. Loading it is a flash, which a perso
 session and the lab log records (lab/targets.toml), done by hand with openFPGALoader. From the
 repo root:
 
-    python -m gateware.littlebit.network <build-dir>
+    python -m gateware.littlebit.network <build-dir> [<integer.json>]
+
+The network is r16's, models/littlebit/runs/r16/integer.json, unless another run's file is named:
+the rank sweep's are built the same way, for their LUTs, block RAM and clock (docs/littlebit.md,
+"Experiments").
 """
 
 import json
@@ -40,7 +44,7 @@ from gateware.bringup.uart_echo import BAUD
 from gateware.cores.littlebit import LittleBitNetwork
 from gateware.cores.uart import UARTRx, UARTTx
 
-__all__ = ["FRAME", "ANSWER", "PIXELS", "NetworkOverUART", "NetworkBoard", "r16"]
+__all__ = ["FRAME", "ANSWER", "PIXELS", "NetworkOverUART", "NetworkBoard", "r16", "read_network"]
 
 PIXELS = 784
 NETWORK = Path(__file__).resolve().parents[2] / "models/littlebit/runs/r16/integer.json"
@@ -48,7 +52,12 @@ NETWORK = Path(__file__).resolve().parents[2] / "models/littlebit/runs/r16/integ
 
 def r16():
     """r16's integer network, as integer.json holds it."""
-    return json.loads(NETWORK.read_text())
+    return read_network(NETWORK)
+
+
+def read_network(path):
+    """The integer network at `path`, as integer.json holds it."""
+    return json.loads(Path(path).read_text())
 
 
 class NetworkOverUART(Elaboratable):
@@ -128,15 +137,24 @@ class NetworkOverUART(Elaboratable):
 
 
 class NetworkBoard(Elaboratable):
-    """r16 over the UART, at 50 MHz from the PLL: what the board runs."""
+    """A network over the UART, at 50 MHz from the PLL: what the board runs. The network is the
+    integer.json at `path`, r16's unless another is given."""
+
+    def __init__(self, path=NETWORK):
+        self.path = path
 
     def elaborate(self, platform):
         m = Module()
         clock_50_mhz(m, platform)
-        m.submodules.network = NetworkOverUART(r16(), CLOCK_HZ)
+        m.submodules.network = NetworkOverUART(read_network(self.path), CLOCK_HZ)
         return m
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 3:
+        sys.exit(__doc__)
     build_dir = sys.argv[1] if len(sys.argv) > 1 else "build"
-    ColorlightI9Platform().build(NetworkBoard(), name="littlebit_network", build_dir=build_dir)
+    path = sys.argv[2] if len(sys.argv) > 2 else NETWORK
+    ColorlightI9Platform().build(
+        NetworkBoard(path), name="littlebit_network", build_dir=build_dir
+    )

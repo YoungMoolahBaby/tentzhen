@@ -9,7 +9,7 @@
 //! layers, as `models/littlebit/runs/r16/integer.json` has them, and a small convolution whose
 //! layer is made up here, applied to each window of its grid ([`integer::windows`]). The output
 //! layer's are r16's, and one made up here whose scores reach both ends of an int32 and tie. The
-//! whole network's is r16's.
+//! whole network's are r16's and the rank sweep's others' ([`SWEEP`]), each given the same images.
 //!
 //! For MNIST's test images, [`mnist`] makes the whole network's case at the time it is needed,
 //! into a file outside the repo, as the full-network cocotb test does.
@@ -17,12 +17,33 @@
 use crate::integer::{self, DenseLayer, LittleBitLayer, Network, Signs};
 use crate::mnist::Images;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 /// Where the vectors are, relative to the repo root.
 pub const FILE: &str = "gateware/cores/tests/littlebit_vectors.json";
 
 /// Where r16's integer network is, relative to the repo root.
 pub const R16: &str = "models/littlebit/runs/r16/integer.json";
+
+/// Where the rank sweep's other integer networks are, relative to the repo root: r = 4, 8, 32 and
+/// 64, E4, E5, E7 and E8 (docs/littlebit.md, "Experiments"). Each has a whole-network case.
+pub const SWEEP: [&str; 4] = [
+    "models/littlebit/runs/r4/integer.json",
+    "models/littlebit/runs/r8/integer.json",
+    "models/littlebit/runs/r32/integer.json",
+    "models/littlebit/runs/r64/integer.json",
+];
+
+/// The integer networks at [`R16`] and at each of [`SWEEP`], in its order, read from under the
+/// repo root `root`.
+pub fn networks(root: &Path) -> Result<(Network, Vec<Network>), String> {
+    let read = |path: &str| {
+        let text = std::fs::read_to_string(root.join(path)).map_err(|e| format!("{path}: {e}"))?;
+        Network::parse(&text).map_err(|e| format!("{path}: {e}"))
+    };
+    let sweep = SWEEP.iter().map(|p| read(p)).collect::<Result<_, _>>()?;
+    Ok((read(R16)?, sweep))
+}
 
 /// What [`write`] writes.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -321,8 +342,17 @@ pub fn mnist(r16: &Network, test: &Images, count: usize) -> Result<NetworkCase, 
     network_case(&format!("{}-mnist-test", r16.run), r16, R16, images)
 }
 
-/// The vectors, from r16's integer network.
-pub fn vectors(r16: &Network) -> Result<Vectors, String> {
+/// The vectors, from r16's integer network and the sweep's others, `sweep`, one for each of
+/// [`SWEEP`] in its order. The sweep's networks are given r16's images, so adding them draws
+/// nothing and changes no case before them.
+pub fn vectors(r16: &Network, sweep: &[Network]) -> Result<Vectors, String> {
+    if sweep.len() != SWEEP.len() {
+        return Err(format!(
+            "{} sweep networks for {} files",
+            sweep.len(),
+            SWEEP.len()
+        ));
+    }
     let mut draw = Draw(0x7E47_2E4E);
     // r16's first layer takes pixels shifted right by 1, so 0 to 127.
     let high = 255u8 >> r16.pixel_shift;
@@ -338,7 +368,10 @@ pub fn vectors(r16: &Network) -> Result<Vectors, String> {
         written_by: "cargo run -p tentzhen-littlebit -- vectors".into(),
         cases,
         dense_cases,
-        network_cases: vec![network_case(&r16.run, r16, R16, images)?],
+        network_cases: std::iter::once((R16, r16))
+            .chain(SWEEP.into_iter().zip(sweep))
+            .map(|(path, net)| network_case(&net.run, net, path, images.clone()))
+            .collect::<Result<_, _>>()?,
     })
 }
 

@@ -1,7 +1,8 @@
 """cocotb tests of gateware/cores/littlebit.py's output layer, `DenseEngine`, and its whole
 network, `LittleBitNetwork`, on Verilator, run by pytest (docs/littlebit.md, "cocotb tests"),
 against the golden model: on the test vectors crates/littlebit/src/vectors.rs writes
-(littlebit_vectors.json), and on MNIST's test images, check 2 of Gate 2.
+(littlebit_vectors.json), and on MNIST's test images, check 2 of Gate 2. The rank sweep's other
+networks, r4, r8, r32 and r64, are each given their test vectors too.
 
 MNIST is never committed, so the golden model scores its images when the test runs: the pytest
 test runs `cargo run -p tentzhen-littlebit -- mnist-vectors`, which reads MNIST from the folder
@@ -21,6 +22,7 @@ import subprocess
 from pathlib import Path
 
 import cocotb
+import pytest
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, RisingEdge, with_timeout
 from cocotb.utils import get_sim_time
@@ -38,6 +40,8 @@ PERIOD_NS = 20
 # 276 clocks after that; the output layer takes its 128, adds the last in a clock later, and runs
 # the argmax over its 10 outputs, one a clock, the last raising `done`: 804 + 276 + 128 + 1 + 10.
 R16_CLOCKS = 1_219
+# The networks of the rank sweep's other runs, each a case of the test vectors after r16's.
+SWEEP = [c["name"] for c in VECTORS["network_cases"][1:]]
 
 
 def dense_case(name):
@@ -46,6 +50,16 @@ def dense_case(name):
 
 def network_of(path):
     return json.loads((ROOT / path).read_text())
+
+
+def network_clocks(network):
+    """The clocks `network` takes for an image, its pixels back to back, as R16_CLOCKS counts them
+    for r16: each hidden layer hands its first output on inputs + 1 + rank + 3 clocks after taking
+    its first input, and the output layer takes its inputs, adds the last a clock later and runs
+    the argmax, a clock an output. That is 1,187 + 2r for the 784 -> 256 -> 128 -> 10 MLP."""
+    hidden = sum(l["inputs"] + 1 + l["rank"] + 3 for l in network["layers"])
+    o = network["output"]
+    return hidden + o["inputs"] + 1 + o["outputs"]
 
 
 def dense_layer(c):
@@ -79,6 +93,15 @@ def test_littlebit_network(tmp_path):
     ]
     run(net, net.ports(), "littlebit_network", "test_littlebit_network", tests, tmp_path,
         env={"LITTLEBIT_MNIST": str(mnist), "LITTLEBIT_MNIST_IMAGES": images})
+
+
+@pytest.mark.parametrize("name", SWEEP)
+def test_littlebit_network_sweep(name, tmp_path):
+    c = next(c for c in VECTORS["network_cases"] if c["name"] == name)
+    net = LittleBitNetwork(network_of(c["network"]))
+    tests = ["littlebit_network_scores_the_sweep_s_test_vectors_as_the_golden_model_does"]
+    run(net, net.ports(), "littlebit_network", "test_littlebit_network", tests, tmp_path,
+        env={"LITTLEBIT_CASE": name})
 
 
 async def start(dut):
@@ -151,16 +174,16 @@ async def littlebit_output_layer_reaches_both_ends_of_an_int32_and_picks_the_fir
     await scores_each_input(dut, dense_case("dense-extremes"))
 
 
-async def scores_each_image(dut, c):
+async def scores_each_image(dut, c, clocks=R16_CLOCKS):
     """A network's case: each image, one at a time, its pixels back to back, the next started on
     the clock the last is done. Every score, the digit, and the clocks each image took, both as
-    the design counts them and as the test does, are checked."""
+    the design counts them and as the test does, are checked, against `clocks`."""
     n_out = len(c["scores"][0])
     await start(dut)
     wrong = []
     for j, image in enumerate(c["images"]):
         first = await feed(dut, image)
-        scores, digit = await answer(dut, n_out, 2 * R16_CLOCKS)
+        scores, digit = await answer(dut, n_out, 2 * clocks)
         seen = round((get_sim_time(unit="ns") - first) / PERIOD_NS)
         cycles = int(dut.cycles.value)
         if (scores, digit) != (c["scores"][j], c["digits"][j]):
@@ -168,12 +191,12 @@ async def scores_each_image(dut, c):
                 f"image {j}: scores {scores}, digit {digit}; the golden model's "
                 f"{c['scores'][j]}, {c['digits'][j]}"
             )
-        assert (cycles, seen) == (R16_CLOCKS, R16_CLOCKS), (
-            f"{c['name']}, image {j}: {cycles} clocks counted, {seen} seen, not {R16_CLOCKS}"
+        assert (cycles, seen) == (clocks, clocks), (
+            f"{c['name']}, image {j}: {cycles} clocks counted, {seen} seen, not {clocks}"
         )
     dut._log.info(
         f"{c['name']}: {len(c['images']) - len(wrong)} of {len(c['images'])} images scored as "
-        f"the golden model scores them, every score and digit; {R16_CLOCKS} clocks each"
+        f"the golden model scores them, every score and digit; {clocks} clocks each"
     )
     assert not wrong, f"{c['name']}: {len(wrong)} images differ: " + "; ".join(wrong[:5])
 
@@ -183,6 +206,15 @@ async def littlebit_network_scores_r16s_test_vectors_as_the_golden_model_does(du
     """r16, 784 -> 256 -> 128 -> 10, given an image of all zeros, one of all 255 and 4 drawn from
     0 to 255: every score and digit is the golden model's, and each image takes 1,219 clocks."""
     await scores_each_image(dut, VECTORS["network_cases"][0])
+
+
+@cocotb.test()
+async def littlebit_network_scores_the_sweep_s_test_vectors_as_the_golden_model_does(dut):
+    """One of the rank sweep's other networks, the case LITTLEBIT_CASE names, given r16's six test
+    images: every score and digit is that network's golden model's, and each image takes 1,187 + 2r
+    clocks, 1,195 at r = 4 and 1,315 at r = 64."""
+    c = next(c for c in VECTORS["network_cases"] if c["name"] == os.environ["LITTLEBIT_CASE"])
+    await scores_each_image(dut, c, network_clocks(network_of(c["network"])))
 
 
 @cocotb.test()

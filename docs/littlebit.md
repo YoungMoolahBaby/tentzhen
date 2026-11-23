@@ -382,6 +382,38 @@ What the counts show:
 Each started where its summary says, before fine-tuning: E2 at 9,828 test images right, E3 at
 8,535. Those are PyTorch's counts, and no test re-checks them.
 
+**The rest of the rank sweep, E4, E5, E7 and E8** (`models/littlebit/train_rank.py`, 2026-11-23).
+These are r16's run at r = 4, 8, 32 and 64, with nothing else changed, each exported as r16 is:
+
+| run | r | test images right, float | integer | the same digit, float and integer | training images right, float / integer | latents saturated, test images | activation exponents |
+|---|---|---|---|---|---|---|---|
+| E4 | 4 | 8,802 (88.02 %) | 8,791 (87.91 %) | 9,932 | 52,869 / 52,850 | 1 | −5, −5 |
+| E5 | 8 | 9,464 (94.64 %) | 9,463 (94.63 %) | 9,974 | 57,036 / 57,018 | 0 | −5, −5 |
+| E6 | 16 | 9,713 (97.13 %) | 9,717 (97.17 %) | 9,980 | 58,798 / 58,809 | 0 | −5, −4 |
+| E7 | 32 | 9,772 (97.72 %) | 9,776 (97.76 %) | 9,993 | 59,602 / 59,597 | 0 | −5, −5 |
+| E8 | 64 | 9,814 (98.14 %) | 9,815 (98.15 %) | 9,993 | 59,887 / 59,886 | 0 | −4, −5 |
+
+`tested`: `the_sweep_scores_what_its_summaries_say` re-scores each run's committed weights in f32
+(`models/littlebit/runs/r4`, `r8`, `r32` and `r64`). `the_sweep_s_integer_json_is_what_the_exporter_writes`
+and `the_sweep_s_integer_is_within_half_a_point_of_float` check the exports and their counts. E6's
+row is r16's, from the tests above. Two runs at each rank gave the same weights, byte for byte, in
+about a minute each.
+
+What the counts show:
+
+- **Check 1 holds at every rank.** The largest loss from float to integer is E4's, 11 images.
+- **Accuracy falls fast below r = 16.** As integers, r = 8 gets 254 fewer test images right than
+  r = 16, and r = 4 gets 926 fewer. This is the plan's first risk, "accuracy collapses at low r"
+  (Risks). Whether residual compensation or the paper's distillation would hold it up is
+  `unknown`: neither has run.
+- **Above r = 16 it gains slowly.** In float, r = 64, at 0.376 bits a weight in layer 1, gets 17
+  fewer images right than E1. E3, at 1.010 bits, gets 7 fewer.
+- **One latent saturates at r = 4, on one test image.** The latent shift is chosen so that none
+  saturates on the training images. On the test images, this one did.
+
+Before fine-tuning, Dual-SVID's starts got 2,906, 4,164, 5,282 and 5,303 test images right at
+r = 4, 8, 32 and 64. Those are PyTorch's counts, and no test re-checks them.
+
 **Fixed-point formats,** fixed at export and the same in the golden model and the gateware:
 
 - Input pixels: uint8, 0–255 scaled to 0–127.
@@ -556,6 +588,42 @@ DP16KD is the pixel FIFO. The Yosys log maps one memory to block RAM,
 it came out the same, byte for byte, and that is the bitstream check 3 ran on (Verification,
 "Check 3 passes at r = 16").
 
+**What each rank costs.** Each rank of the sweep is the same board design built from its own
+integer network (`python -m gateware.littlebit.network <build-dir>
+models/littlebit/runs/r<r>/integer.json`, OSS CAD Suite 2026-11-21, 2026-11-23). r16, built the
+same way on this branch, came out as the bitstream above, byte for byte. nextpnr reports:
+
+| run | r | logic cells (TRELLIS_COMB) | flip-flops | 18 × 18 multipliers | block RAM | Fmax after routing | bitstream's sha256 |
+|---|---|---|---|---|---|---|---|
+| E4 | 4 | 6,889 | 1,616 | 18 | 1 DP16KD | 55.27 MHz | `ed3d189e…` |
+| E5 | 8 | 8,939 | 2,086 | 20 | 1 DP16KD | 50.06 MHz | `b41e697e…` |
+| E6 | 16 | 12,640 | 3,050 | 20 | 1 DP16KD | 55.63 MHz | `754c51ae…` |
+| E7 | 32 | 20,172 | 4,973 | 20 | 1 DP16KD | 50.43 MHz | `1b92ff46…` |
+| E8 | 64 | 35,139 | 8,815 | 20 | 1 DP16KD | 49.55 MHz, short of 50 | none to load |
+
+These are the toolchain's figures, `trusted` with it (`fpga-toolchain`). None of these bitstreams
+but r16's has been loaded onto a board. What they show:
+
+- **The logic grows with the rank, about linearly.** Across the five builds, each step of r adds
+  about 470 cells, on top of about 5,000 for the rest: (35,139 − 6,889) / (64 − 4) = 471. That's
+  arithmetic on these five figures, not a model of the logic.
+- **E8 doesn't fit the plan.** At r = 64, its 35,139 cells are over the 30,000 that Gate 2 allows,
+  though they're 80 % of the chip's 43,848, so the chip isn't full. Its route also misses 50 MHz,
+  at 49.55. nextpnr stops with an error when a clock is missed. A bitstream packed from its
+  output anyway is not one to load, and none is kept.
+- **So, for research question 4,** at r = 64 timing runs out before the chip's logic does, and
+  routing completes. The largest rank that fits, E11, lies between 32 and 64.
+- **Two ranks only just close.** r = 8 reaches 50.06 MHz and r = 32 reaches 50.43, slower than
+  r = 4 and r = 16. Why is `unknown`. nextpnr's placement is a seeded search, and each build ran
+  at its default seed.
+- **E4 uses 18 multipliers, and the rest 20.** Why is `unknown` too.
+
+The clocks an image are the cocotb test's: each rank's network scores its six test images as its
+golden model does, in 1,187 + 2r clocks, which is 1,195, 1,203, 1,251 and 1,315
+(`littlebit_network_scores_the_sweep_s_test_vectors_as_the_golden_model_does`). That test runs
+r16's six images through each network. Only r16 has run all 10,000 MNIST test images in cocotb
+(check 2) and 1,000 on the board (check 3).
+
 ## Verification
 
 Every stage must match the integer golden model bit for bit; accuracy is compared only at the step
@@ -643,7 +711,10 @@ inside the bitstream.
   images on every commit and all 10,000 before any board run. The gate runs all 10,000 on every
   commit. MNIST is never committed, so the golden model scores the images as the test runs, into
   the test's own temporary folder (`cargo run -p tentzhen-littlebit -- mnist-vectors <count>
-  <file>`). A top-level test sends r16 frames over the UART
+  <file>`). The sweep's other networks, r4, r8, r32 and r64, are each given r16's six test images,
+  and checked for every score, the digit and 1,187 + 2r clocks an image
+  (`littlebit_network_scores_the_sweep_s_test_vectors_as_the_golden_model_does`). A top-level test
+  sends r16 frames over the UART
   (`gateware/littlebit/tests/test_network_over_uart.py`).
 - Waveforms (FST) kept only for failing tests.
 
@@ -675,7 +746,8 @@ Phase 0 may run beside Phase 1: it needs only the board and the toolchain.
 2. **Phase 1, the model on the computer.** Train E1–E3 and the LittleBit sweep; write the golden
    model and the exporter. **Gate 1:** check 1 at r = 16, the integer model within 0.5 points of
    float. Check 1 passed on 2026-11-22 (Verification). E2 and E3 ran on 2026-11-23 (Model, "The
-   baselines, E2 and E3"). The sweep's other ranks are not run yet.
+   baselines, E2 and E3"), and so did the sweep's other ranks, 4, 8, 32 and 64 ("The rest of the
+   rank sweep").
 3. **Phase 2, gateware and simulation.** The weight-ROM generator, the layer engine and the top
    level; cocotb on Verilator. **Gate 2:** check 2, bit-exact on all 10,000 test images, and at most
    30,000 LUTs at 50 MHz in nextpnr's report. The network's first board run waits for this gate.
@@ -744,8 +816,13 @@ Gate 0's echo goes through the same DAPLink serial port as the bench's Phase 1 "
 - [x] Train the baselines E2 (int8) and E3 (binary, one scale per output), and export them as
   integers (`models/littlebit/train_baseline.py`, 2026-11-23). E2 got 9,833 of the 10,000 test
   images right as integers (9,835 in float). E3 got 9,824 both ways. Both are `tested` by
-  `e2_and_e3_integer_are_within_half_a_point_of_float`. Next, the sweep's other ranks: 4, 8, 32
-  and 64.
+  `e2_and_e3_integer_are_within_half_a_point_of_float`.
+- [x] Run the sweep's other ranks, E4, E5, E7 and E8, export them and build each for the board
+  (`models/littlebit/train_rank.py` and `gateware/littlebit/network.py`, 2026-11-23). Check 1
+  holds at every rank, `tested` by `the_sweep_s_integer_is_within_half_a_point_of_float`. r = 4
+  falls to 87.91 % as integers. r = 64 misses both 50 MHz in nextpnr and Gate 2's cell budget
+  (Hardware architecture, "What each rank costs"). Next: E11, the largest rank that fits; then E9,
+  Variant B, and E10, E12.
 
 ## Experiments
 
@@ -758,11 +835,11 @@ Each cell fills as its run finishes, from the run's record or test.
 | E1 | FP32 dense (the ceiling) | computer only | 32 | 98.31 (float) | | | | | done |
 | E2 | int8 dense | computer only | 8 | 98.33 (float 98.35) | — | — | — | — | done |
 | E3 | binary dense, one scale per output | computer only | 1.010 | 98.24 (float 98.24) | — | — | — | — | done |
-| E4 | LittleBit r = 4 | A, hardwired | 0.062 | | | | | | planned |
-| E5 | LittleBit r = 8 | A, hardwired | 0.083 | | | | | | planned |
+| E4 | LittleBit r = 4 | A, hardwired | 0.062 | 87.91 (float 88.02) | 6,889 | 1 (the pixel FIFO) | 55.27 | 1,195 clocks each, 41,841 at 50 MHz | built; not run on the board |
+| E5 | LittleBit r = 8 | A, hardwired | 0.083 | 94.63 (float 94.64) | 8,939 | 1 (the pixel FIFO) | 50.06 | 1,203 clocks each, 41,563 at 50 MHz | built; not run on the board |
 | E6 | LittleBit r = 16 | A, hardwired | 0.125 | 97.17 (float 97.13) | 12,640 | 1 (the pixel FIFO) | 55.63 | 13.73 end to end; 1,219 clocks each, 41,017 at 50 MHz | Gate 3 passed |
-| E7 | LittleBit r = 32 | A, hardwired | 0.209 | | | | | | planned |
-| E8 | LittleBit r = 64 | A, hardwired | 0.376 | | | | | | planned |
+| E7 | LittleBit r = 32 | A, hardwired | 0.209 | 97.76 (float 97.72) | 20,172 | 1 (the pixel FIFO) | 50.43 | 1,251 clocks each, 39,968 at 50 MHz | built; not run on the board |
+| E8 | LittleBit r = 64 | A, hardwired | 0.376 | 98.15 (float 98.14) | 35,139 | 1 (the pixel FIFO) | 49.55, short of 50 | 1,315 clocks each; 50 MHz not met | over the cell budget, and short of 50 MHz |
 | E9 | LittleBit r = 16 | B, block RAM | 0.125 | | | | | | planned |
 | E10 | the same weight bits as E7, wider: 784 → 1024 → 512 → 10 | A, hardwired | set to match E7 | | | | | | planned |
 | E11 | the largest fit: raise r until place-and-route or 50 MHz fails | A, hardwired | | | | | | | planned |
@@ -836,8 +913,8 @@ questions, with r = 16–64 as the low end.
 
 ## Open questions
 
-- 8-bit or 16-bit scales? Start with 8, and switch only if check 1 fails (Jon's spec). At r = 16 it
-  passed with 8 (Verification); the lower ranks are not run yet.
+- 8-bit or 16-bit scales? Start with 8, and switch only if check 1 fails (Jon's spec). It passed
+  with 8 at every rank run, r = 4 to 64 (Model, "The rest of the rank sweep").
 - A simple MLP first, or straight to a small convolutional network? This step assumes the MLP.
 - Where the toolchain runs before the pinned toolchain of `roadmap.md` Phase 0 exists: installed on
   the lab computer, or not until then.
