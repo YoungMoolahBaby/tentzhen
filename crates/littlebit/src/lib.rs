@@ -369,6 +369,49 @@ mod tests {
         assert!(board::difference(&outputs[..1], &golden).is_some());
     }
 
+    /// The network's answer is 0x5A, each score an int32 least significant byte first, the
+    /// digit, and the clocks, a uint32 least significant byte first: 46 bytes for 10 scores. An
+    /// answer of the wrong length or header is refused, and one whose scores or digit differ from
+    /// the golden model's says where.
+    #[test]
+    fn a_network_answer_is_read_as_its_frame_says() {
+        assert_eq!(board::scored_len(10), 46);
+        let answer = [
+            0x5A, 0x10, 0x00, 0x00, 0x00, 0xFE, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x80, 1, 0xC3,
+            0x04, 0x00, 0x00,
+        ];
+        let scored = board::parse_scored(&answer, 3).unwrap();
+        assert_eq!(
+            scored,
+            board::Scored {
+                scores: vec![16, -2, i32::MIN],
+                digit: 1,
+                clocks: 1_219
+            }
+        );
+        assert!(board::parse_scored(&answer[..17], 3).is_err());
+        let mut wrong = answer;
+        wrong[0] = 0x5B;
+        assert!(board::parse_scored(&wrong, 3).is_err());
+        // The golden model's digit is the first of the highest scores.
+        assert_eq!(
+            board::scored_difference(&scored, &[16, -2, i32::MIN]),
+            Some("every score is the golden model's, but the digit is 1, not 0".into())
+        );
+        let tie = board::Scored {
+            scores: vec![5, 9, 9],
+            digit: 1,
+            clocks: 1_219,
+        };
+        assert_eq!(board::scored_difference(&tie, &[5, 9, 9]), None);
+        let d = board::scored_difference(&tie, &[5, 9, 8]).unwrap();
+        assert!(
+            d.contains("1 of 3 scores differ") && d.contains("score 2"),
+            "{d}"
+        );
+        assert!(board::scored_difference(&tie, &[5, 9]).is_some());
+    }
+
     /// The gateware's test vectors are what the golden model writes, and load as their schema.
     /// Each case exercises the engine's edges: some latent saturates, and some output clamps to
     /// 0, some to 255, and some falls between.

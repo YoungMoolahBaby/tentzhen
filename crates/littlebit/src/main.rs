@@ -18,6 +18,14 @@
 //! test vectors for that layer, or the first `<count>` MNIST test images, each pixel shifted right
 //! by the network's pixel shift, from the folder MNIST_DIR names. It talks to the board; loading
 //! the board is a flash, done by hand.
+//!
+//! `cargo run -p tentzhen-littlebit -- network <port> vectors`, or `... network <port> mnist
+//! <count>`, from the repo root, sends the whole network on the board
+//! (`gateware/littlebit/network.py`) its images the same way, and checks each answer's scores and
+//! digit against the golden model's. The images are the gateware's network test vectors for r16,
+//! or the first `<count>` MNIST test images, as MNIST stores them, since the network shifts them
+//! itself. It reports the clocks the network counted for each image, and, for MNIST, how many
+//! digits are the images' labels.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -66,40 +74,23 @@ fn layer(port: &str, source: &[String]) -> Result<String, String> {
         }
         _ => return Err(USAGE.into()),
     };
-    let mut serial = serialport::new(port, 115_200)
-        .timeout(Duration::from_secs(2))
-        .open()
-        .map_err(|e| format!("{port}: {e}"))?;
-    let (mut sent, mut received) = (Vec::new(), Vec::new());
+    let talk = talk(port, &inputs, board::answer_len(layer.outputs), "input")?;
     let mut differences = Vec::new();
-    let start = Instant::now();
-    for (k, x) in inputs.iter().enumerate() {
-        let frame = board::frame(x);
-        let mut answer = vec![0; board::answer_len(layer.outputs)];
-        serial
-            .clear(serialport::ClearBuffer::Input)
-            .and_then(|()| Ok(serial.write_all(&frame)?))
-            .and_then(|()| Ok(serial.read_exact(&mut answer)?))
-            .map_err(|e| format!("input {k}: {e}"))?;
+    for (k, (x, answer)) in inputs.iter().zip(&talk.answers).enumerate() {
         let outputs =
-            board::parse_answer(&answer, layer.outputs).map_err(|e| format!("input {k}: {e}"))?;
+            board::parse_answer(answer, layer.outputs).map_err(|e| format!("input {k}: {e}"))?;
         if let Some(d) = board::difference(&outputs, &layer.trace(x)?) {
             differences.push(format!("input {k}: {d}"));
         }
-        sent.extend_from_slice(&frame);
-        received.extend_from_slice(&answer);
     }
     let mut report = format!(
         "{port}: {} inputs; {} answered exactly as the golden model, every y and z; {} not; in \
-         {:.1} s\n  sent {} bytes, sha256 {}\n  received {} bytes, sha256 {}\n",
+         {:.1} s\n{}",
         inputs.len(),
         inputs.len() - differences.len(),
         differences.len(),
-        start.elapsed().as_secs_f64(),
-        sent.len(),
-        mnist::sha256_hex(&sent),
-        received.len(),
-        mnist::sha256_hex(&received),
+        talk.seconds,
+        talk.bytes()
     );
     for d in differences.iter().take(10) {
         report += &format!("  {d}\n");
@@ -111,8 +102,138 @@ fn layer(port: &str, source: &[String]) -> Result<String, String> {
     }
 }
 
+/// What went over the serial port: each answer, the seconds it all took, and every byte each
+/// way.
+struct Talk {
+    answers: Vec<Vec<u8>>,
+    seconds: f64,
+    sent: Vec<u8>,
+    received: Vec<u8>,
+}
+
+impl Talk {
+    fn bytes(&self) -> String {
+        format!(
+            "  sent {} bytes, sha256 {}\n  received {} bytes, sha256 {}\n",
+            self.sent.len(),
+            mnist::sha256_hex(&self.sent),
+            self.received.len(),
+            mnist::sha256_hex(&self.received),
+        )
+    }
+}
+
+/// Sends each of `inputs` over the serial port `port` at 115,200 baud as a frame, and reads its
+/// answer, `len` bytes, before sending the next. `what` names an input in an error.
+fn talk(port: &str, inputs: &[Vec<u8>], len: usize, what: &str) -> Result<Talk, String> {
+    let mut serial = serialport::new(port, 115_200)
+        .timeout(Duration::from_secs(2))
+        .open()
+        .map_err(|e| format!("{port}: {e}"))?;
+    let (mut sent, mut received) = (Vec::new(), Vec::new());
+    let mut answers = Vec::with_capacity(inputs.len());
+    let start = Instant::now();
+    for (k, x) in inputs.iter().enumerate() {
+        let frame = board::frame(x);
+        let mut answer = vec![0; len];
+        serial
+            .clear(serialport::ClearBuffer::Input)
+            .and_then(|()| Ok(serial.write_all(&frame)?))
+            .and_then(|()| Ok(serial.read_exact(&mut answer)?))
+            .map_err(|e| format!("{what} {k}: {e}"))?;
+        sent.extend_from_slice(&frame);
+        received.extend_from_slice(&answer);
+        answers.push(answer);
+    }
+    Ok(Talk {
+        answers,
+        seconds: start.elapsed().as_secs_f64(),
+        sent,
+        received,
+    })
+}
+
+fn network(port: &str, source: &[String]) -> Result<String, String> {
+    let text =
+        std::fs::read_to_string(vectors::R16).map_err(|e| format!("{}: {e}", vectors::R16))?;
+    let net = integer::Network::parse(&text)?;
+    let outputs = net.output.outputs;
+    let (images, labels): (Vec<Vec<u8>>, Option<Vec<u8>>) = match source {
+        [s] if s == "vectors" => {
+            let text = std::fs::read_to_string(vectors::FILE)
+                .map_err(|e| format!("{}: {e}", vectors::FILE))?;
+            let v: vectors::Vectors =
+                serde_json::from_str(&text).map_err(|e| format!("{}: {e}", vectors::FILE))?;
+            let case = v
+                .network_cases
+                .into_iter()
+                .find(|c| c.name == "r16")
+                .ok_or("the vectors have no network case r16")?;
+            (case.images, None)
+        }
+        [s, count] if s == "mnist" => {
+            let count: usize = count.parse().map_err(|e| format!("count {count}: {e}"))?;
+            let (_, test) = mnist::load(Path::new("."), &mnist_dir()?)?;
+            if count > test.len() {
+                return Err(format!("{count} images, of the {} there are", test.len()));
+            }
+            let images = (0..count).map(|k| test.image(k).to_vec()).collect();
+            (images, Some(test.labels[..count].to_vec()))
+        }
+        _ => return Err(USAGE.into()),
+    };
+    let talk = talk(port, &images, board::scored_len(outputs), "image")?;
+    let mut differences = Vec::new();
+    let mut clocks = std::collections::BTreeMap::new();
+    let mut right = 0;
+    for (k, (image, answer)) in images.iter().zip(&talk.answers).enumerate() {
+        let scored = board::parse_scored(answer, outputs).map_err(|e| format!("image {k}: {e}"))?;
+        let (golden, _) = net.scores(image)?;
+        if let Some(d) = board::scored_difference(&scored, &golden) {
+            differences.push(format!("image {k}: {d}"));
+        }
+        *clocks.entry(scored.clocks).or_insert(0) += 1;
+        if let Some(labels) = &labels {
+            right += usize::from(scored.digit == usize::from(labels[k]));
+        }
+    }
+    let mut report = format!(
+        "{port}: {} images; {} scored exactly as the golden model, every score and the digit; {} \
+         not; in {:.1} s, {:.2} images a second over the serial link\n",
+        images.len(),
+        images.len() - differences.len(),
+        differences.len(),
+        talk.seconds,
+        images.len() as f64 / talk.seconds,
+    );
+    let counted: Vec<String> = clocks
+        .iter()
+        .map(|(c, n)| format!("{c} on {n} images"))
+        .collect();
+    report += &format!(
+        "  clocks an image, as the network counts them: {}\n",
+        counted.join(", ")
+    );
+    if labels.is_some() {
+        report += &format!(
+            "  digits that are MNIST's labels: {right} of {}\n",
+            images.len()
+        );
+    }
+    report += &talk.bytes();
+    for d in differences.iter().take(10) {
+        report += &format!("  {d}\n");
+    }
+    if differences.is_empty() {
+        Ok(report)
+    } else {
+        Err(report)
+    }
+}
+
 const USAGE: &str = "usage: tentzhen-littlebit export <run-folder> | vectors | \
-                     mnist-vectors <count> <file> | layer <port> (vectors | mnist <count>)";
+                     mnist-vectors <count> <file> | layer <port> (vectors | mnist <count>) | \
+                     network <port> (vectors | mnist <count>)";
 
 fn write_mnist_vectors(count: &str, file: &Path) -> Result<String, String> {
     let count: usize = count.parse().map_err(|e| format!("count {count}: {e}"))?;
@@ -208,6 +329,7 @@ fn main() -> ExitCode {
             write_mnist_vectors(count, Path::new(file))
         }
         [command, port, source @ ..] if command == "layer" => layer(port, source),
+        [command, port, source @ ..] if command == "network" => network(port, source),
         _ => Err(USAGE.into()),
     };
     match result {
