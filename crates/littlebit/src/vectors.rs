@@ -5,11 +5,17 @@
 //! not what it writes.
 //!
 //! No MNIST image is in them, since MNIST's terms are unread and its files are never committed:
-//! the inputs are drawn from a fixed seed. Three cases: r16's two hidden layers, as
-//! `models/littlebit/runs/r16/integer.json` has them, and a small convolution whose layer is made
-//! up here, applied to each window of its grid ([`integer::windows`]).
+//! the inputs are drawn from a fixed seed. The LittleBit layers' cases are r16's two hidden
+//! layers, as `models/littlebit/runs/r16/integer.json` has them, and a small convolution whose
+//! layer is made up here, applied to each window of its grid ([`integer::windows`]). The output
+//! layer's are r16's, and one made up here whose scores reach both ends of an int32 and tie. The
+//! whole network's is r16's.
+//!
+//! For MNIST's test images, [`mnist`] makes the whole network's case at the time it is needed,
+//! into a file outside the repo, as the full-network cocotb test does.
 
-use crate::integer::{self, LittleBitLayer, Network, Signs};
+use crate::integer::{self, DenseLayer, LittleBitLayer, Network, Signs};
+use crate::mnist::Images;
 use serde::{Deserialize, Serialize};
 
 /// Where the vectors are, relative to the repo root.
@@ -24,7 +30,12 @@ pub const R16: &str = "models/littlebit/runs/r16/integer.json";
 pub struct Vectors {
     /// How to write them again.
     pub written_by: String,
+    /// LittleBit layers'.
     pub cases: Vec<Case>,
+    /// Output layers'.
+    pub dense_cases: Vec<DenseCase>,
+    /// Whole networks'.
+    pub network_cases: Vec<NetworkCase>,
 }
 
 /// One layer, the inputs it is given in order, and what the golden model makes of each.
@@ -60,7 +71,36 @@ pub struct Convolution {
     pub grid: Vec<u8>,
 }
 
-/// A LittleBit layer's vectors for one input after V, â„“, U and h ([`integer::Trace`], less p,
+/// An output layer, the inputs it is given in order, and the golden model's scores for each and
+/// the digit it picks from them ([`integer::argmax`]).
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DenseCase {
+    pub name: String,
+    /// A network file, relative to the repo root, whose output layer this is; or the layer, made
+    /// up for the test, in `layer`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer: Option<DenseLayer>,
+    pub inputs: Vec<Vec<u8>>,
+    pub scores: Vec<Vec<i32>>,
+    pub digits: Vec<usize>,
+}
+
+/// A whole network, a network file relative to the repo root, the images it is given in order,
+/// each 784 pixels as MNIST stores them, and the golden model's scores and digit for each.
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkCase {
+    pub name: String,
+    pub network: String,
+    pub images: Vec<Vec<u8>>,
+    pub scores: Vec<Vec<i32>>,
+    pub digits: Vec<usize>,
+}
+
+/// A LittleBit layer's vectors for one input after V, ℓ, U and h ([`integer::Trace`], less p,
 /// which the engine never holds), and how many latents were saturated.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -191,24 +231,120 @@ fn convolution(draw: &mut Draw) -> Result<Case, String> {
     })
 }
 
+/// Each input's scores from `layer`, and the digit picked from them.
+fn scored(layer: &DenseLayer, inputs: &[Vec<u8>]) -> Result<(Vec<Vec<i32>>, Vec<usize>), String> {
+    let scores = inputs
+        .iter()
+        .map(|x| layer.scores(x))
+        .collect::<Result<Vec<_>, _>>()?;
+    let digits = scores.iter().map(|s| integer::argmax(s)).collect();
+    Ok((scores, digits))
+}
+
+/// r16's output layer given all zeros, all 255, and four inputs drawn from 0 to 255.
+fn output(net: &Network, draw: &mut Draw) -> Result<DenseCase, String> {
+    let n = net.output.inputs;
+    let mut inputs = vec![vec![0; n], vec![255; n]];
+    inputs.extend((0..4).map(|_| draw.bytes(n, 255)));
+    let (scores, digits) = scored(&net.output, &inputs)?;
+    Ok(DenseCase {
+        name: format!("{}-output", net.run),
+        network: Some(R16.into()),
+        layer: None,
+        inputs,
+        scores,
+        digits,
+    })
+}
+
+/// An output layer from 4 inputs to 5, made up so its scores reach both ends of an int32 and tie.
+/// Output 0 reaches -2^31 when every input is 255, and output 3 reaches 2^31 - 1. Outputs 1 and 3
+/// tie whenever the last input is 0, and outputs 1, 2 and 3 all tie when every input is, so the
+/// first of the highest is not always the last.
+fn extremes(draw: &mut Draw) -> Result<DenseCase, String> {
+    let top = i32::MAX - 4 * 255 * 127;
+    let layer = DenseLayer {
+        inputs: 4,
+        outputs: 5,
+        input_exponent: 0,
+        weight: vec![
+            vec![-128; 4],
+            vec![127, 127, 127, 0],
+            vec![0; 4],
+            vec![127; 4],
+            vec![-128, 127, -128, 127],
+        ],
+        weight_exponent: 0,
+        bias: vec![i32::MIN + 4 * 255 * 128, top, top, top, 0],
+    };
+    let mut inputs = vec![vec![0; 4], vec![255; 4], vec![5, 9, 200, 0]];
+    inputs.extend((0..3).map(|_| draw.bytes(4, 255)));
+    let (scores, digits) = scored(&layer, &inputs)?;
+    Ok(DenseCase {
+        name: "dense-extremes".into(),
+        network: None,
+        layer: Some(layer),
+        inputs,
+        scores,
+        digits,
+    })
+}
+
+/// The whole of `net`, from the network file at `path`, given `images`.
+fn network_case(
+    name: &str,
+    net: &Network,
+    path: &str,
+    images: Vec<Vec<u8>>,
+) -> Result<NetworkCase, String> {
+    let scores = images
+        .iter()
+        .map(|image| Ok(net.scores(image)?.0))
+        .collect::<Result<Vec<_>, String>>()?;
+    let digits = scores.iter().map(|s| integer::argmax(s)).collect();
+    Ok(NetworkCase {
+        name: name.into(),
+        network: path.into(),
+        images,
+        scores,
+        digits,
+    })
+}
+
+/// The whole of r16 given MNIST's first `count` test images, for the full-network cocotb test,
+/// which writes it to a file outside the repo: MNIST is never committed.
+pub fn mnist(r16: &Network, test: &Images, count: usize) -> Result<NetworkCase, String> {
+    if count > test.len() {
+        return Err(format!("{count} images, of the {} there are", test.len()));
+    }
+    let images = (0..count).map(|k| test.image(k).to_vec()).collect();
+    network_case(&format!("{}-mnist-test", r16.run), r16, R16, images)
+}
+
 /// The vectors, from r16's integer network.
 pub fn vectors(r16: &Network) -> Result<Vectors, String> {
     let mut draw = Draw(0x7E47_2E4E);
     // r16's first layer takes pixels shifted right by 1, so 0 to 127.
     let high = 255u8 >> r16.pixel_shift;
+    let cases = vec![
+        hidden(r16, 0, high, &mut draw)?,
+        hidden(r16, 1, 255, &mut draw)?,
+        convolution(&mut draw)?,
+    ];
+    let dense_cases = vec![output(r16, &mut draw)?, extremes(&mut draw)?];
+    let mut images = vec![vec![0; 784], vec![255; 784]];
+    images.extend((0..4).map(|_| draw.bytes(784, 255)));
     Ok(Vectors {
         written_by: "cargo run -p tentzhen-littlebit -- vectors".into(),
-        cases: vec![
-            hidden(r16, 0, high, &mut draw)?,
-            hidden(r16, 1, 255, &mut draw)?,
-            convolution(&mut draw)?,
-        ],
+        cases,
+        dense_cases,
+        network_cases: vec![network_case(&r16.run, r16, R16, images)?],
     })
 }
 
-/// The vectors as [`FILE`] holds them: JSON with one input or step per line, and a newline at the
-/// end.
-pub fn to_json(vectors: &Vectors) -> String {
+/// The vectors as [`FILE`] holds them, or a case as [`mnist`] makes it: JSON with one input or
+/// step per line, and a newline at the end.
+pub fn to_json<T: Serialize>(vectors: &T) -> String {
     let mut text = serde_json::to_string_pretty(vectors).expect("vectors serialize");
     // serde_json writes each number of an array on a line of its own; fold each array of numbers
     // onto one line, so a 784-input vector takes one line, not 786.

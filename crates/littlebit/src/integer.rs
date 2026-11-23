@@ -273,6 +273,11 @@ impl DenseLayer {
     }
 }
 
+/// The index of the highest score, the first if two tie, as the FPGA's argmax picks it.
+pub fn argmax(scores: &[i32]) -> usize {
+    (0..scores.len()).fold(0, |m, i| if scores[i] > scores[m] { i } else { m })
+}
+
 /// What a network makes of a set of images: each image's predicted digit, and how many latents,
 /// over all of them, were saturated.
 pub struct Predictions {
@@ -364,16 +369,14 @@ impl Network {
         Ok((self.output.scores(&x)?, saturated))
     }
 
-    /// The digit each image of `set` scores highest, the first if two tie, as the FPGA's argmax
-    /// will pick it.
+    /// The digit each image of `set` scores highest, [`argmax`].
     pub fn predict(&self, set: &Images) -> Result<Predictions, String> {
         let mut digits = Vec::with_capacity(set.len());
         let mut saturated = 0;
         for k in 0..set.len() {
             let (scores, n) = self.scores(set.image(k))?;
             saturated += n;
-            digits
-                .push((0..scores.len()).fold(0, |m, i| if scores[i] > scores[m] { i } else { m }));
+            digits.push(argmax(&scores));
         }
         Ok(Predictions { digits, saturated })
     }

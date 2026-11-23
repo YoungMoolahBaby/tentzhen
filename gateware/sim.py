@@ -26,10 +26,10 @@ def ran_and_failed(results):
     return ran, failed
 
 
-def run(top, ports, name, test_module, tests, build_dir, platform=None):
+def run(top, ports, name, test_module, tests, build_dir, platform=None, env=None):
     """Builds `top`, with `ports` as its toplevel module `name`'s ports, in `build_dir`, runs the
-    cocotb tests named in `tests` from `test_module` on it, and fails unless just those ran, each
-    once, and passed."""
+    cocotb tests named in `tests` from `test_module` on it, with the environment variables `env`
+    added, and fails unless just those ran, each once, and passed."""
     source = build_dir / f"{name}.v"
     source.write_text(verilog.convert(top, name=name, ports=ports, platform=platform))
     runner = get_runner("verilator")
@@ -42,7 +42,11 @@ def run(top, ports, name, test_module, tests, build_dir, platform=None):
         always=True,
     )
     results = runner.test(
-        test_module=test_module, testcase=tests, hdl_toplevel=name, build_dir=build_dir
+        test_module=test_module,
+        testcase=tests,
+        hdl_toplevel=name,
+        build_dir=build_dir,
+        extra_env=env or {},
     )
     ran, failed = ran_and_failed(results)
     assert (sorted(ran), failed) == (sorted(tests), []), (

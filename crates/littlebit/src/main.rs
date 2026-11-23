@@ -6,6 +6,11 @@
 //! `cargo run -p tentzhen-littlebit -- vectors`, from the repo root, writes the gateware's test
 //! vectors (`tentzhen_littlebit::vectors`). They need no MNIST.
 //!
+//! `cargo run -p tentzhen-littlebit -- mnist-vectors <count> <file>`, from the repo root, writes
+//! r16's scores and digits for MNIST's first `<count>` test images, with the images, to `<file>`,
+//! for the full-network cocotb test (`tentzhen_littlebit::vectors::mnist`). `<file>` belongs
+//! outside the repo, since MNIST is never committed; MNIST comes from the folder MNIST_DIR names.
+//!
 //! `cargo run -p tentzhen-littlebit -- layer <port> vectors`, or `... layer <port> mnist <count>`,
 //! from the repo root, sends r16's first layer on the board (`gateware/bringup/littlebit_layer.py`)
 //! its inputs over the serial port `<port>` at 115,200 baud, a frame at a time, and checks each
@@ -107,7 +112,28 @@ fn layer(port: &str, source: &[String]) -> Result<String, String> {
 }
 
 const USAGE: &str = "usage: tentzhen-littlebit export <run-folder> | vectors | \
-                     layer <port> (vectors | mnist <count>)";
+                     mnist-vectors <count> <file> | layer <port> (vectors | mnist <count>)";
+
+fn write_mnist_vectors(count: &str, file: &Path) -> Result<String, String> {
+    let count: usize = count.parse().map_err(|e| format!("count {count}: {e}"))?;
+    let text =
+        std::fs::read_to_string(vectors::R16).map_err(|e| format!("{}: {e}", vectors::R16))?;
+    let r16 = integer::Network::parse(&text)?;
+    let (_, test) = mnist::load(Path::new("."), &mnist_dir()?)?;
+    let case = vectors::mnist(&r16, &test, count)?;
+    std::fs::write(file, vectors::to_json(&case))
+        .map_err(|e| format!("{}: {e}", file.display()))?;
+    let right = case
+        .digits
+        .iter()
+        .zip(&test.labels)
+        .filter(|&(&d, &l)| d == usize::from(l))
+        .count();
+    Ok(format!(
+        "wrote {}: r16's scores for MNIST's first {count} test images, {right} of them right\n",
+        file.display()
+    ))
+}
 
 fn write_vectors() -> Result<String, String> {
     let text =
@@ -124,6 +150,22 @@ fn write_vectors() -> Result<String, String> {
             case.name,
             case.inputs.len(),
             saturated
+        );
+    }
+    for case in &v.dense_cases {
+        report += &format!(
+            "  {}: {} inputs, digits {:?}\n",
+            case.name,
+            case.inputs.len(),
+            case.digits
+        );
+    }
+    for case in &v.network_cases {
+        report += &format!(
+            "  {}: {} images, digits {:?}\n",
+            case.name,
+            case.images.len(),
+            case.digits
         );
     }
     Ok(report)
@@ -162,6 +204,9 @@ fn main() -> ExitCode {
     let result = match args.as_slice() {
         [command, folder] if command == "export" => export(Path::new(folder)),
         [command] if command == "vectors" => write_vectors(),
+        [command, count, file] if command == "mnist-vectors" => {
+            write_mnist_vectors(count, Path::new(file))
+        }
         [command, port, source @ ..] if command == "layer" => layer(port, source),
         _ => Err(USAGE.into()),
     };

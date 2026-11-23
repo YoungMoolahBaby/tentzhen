@@ -201,9 +201,11 @@ person's approval in the session, and every load is logged as a `firmware.flash`
 |---|---|---|
 | training and the rank sweep | Python, PyTorch: the exception CLAUDE.md names for it | `models/littlebit/` |
 | the weight export and the integer golden model | Rust | `crates/littlebit` |
-| the layer engines, the weight-ROM generator, the UART, the top level | Amaranth | `gateware/littlebit/` |
-| tests of the gateware | cocotb on Verilator, run by pytest | `gateware/littlebit/tests/`, as the UART's are in `gateware/cores/tests/` |
-| the host: sends images, compares answers, logs, writes the record | Rust, a `tentzhen` command | `crates/tentzhen` |
+| the layer engine, the output layer, the weight-ROM generator, the whole network | Amaranth | `gateware/cores/littlebit.py` |
+| the UART | Amaranth | `gateware/cores/uart.py` |
+| the top level: the network behind the UART | Amaranth | `gateware/littlebit/network.py` |
+| tests of the gateware | cocotb on Verilator, run by pytest | `gateware/cores/tests/` and `gateware/littlebit/tests/` |
+| the host: sends inputs, compares answers | Rust, `tentzhen-littlebit`'s commands | `crates/littlebit` |
 
 Each directory is made when its first real file arrives (`roadmap.md`, Phase 0).
 
@@ -391,7 +393,10 @@ flowchart LR
 ```
 
 Layers 1 and 2 each get a LittleBit engine of their own, so they run as a pipeline. The output layer
-uses 10 multipliers at once, one per digit. One engine:
+uses 10 multipliers at once, one per digit: each input, one a clock, is multiplied by its column of
+the weights and added into 10 accumulators that start from the biases. Then the argmax reads the
+10 scores one a clock and keeps the first of the highest, as the golden model does
+(`DenseEngine` and `LittleBitNetwork` in `gateware/cores/littlebit.py`). One engine:
 
 ```mermaid
 flowchart LR
@@ -422,11 +427,19 @@ nextpnr's first routes of the two layers reached 40.72 and 44.80 MHz, short of 5
 **Clocks per image.** The engine takes in + r + out + 1 clocks a vector, and its last output comes
 2 clocks after that. With inputs back to back, that is `tested`: 1,057 clocks for r16's layer 1
 and 401 for its layer 2 (`littlebit_engine_computes_r16_layer_1_as_the_golden_model_does`,
-`littlebit_engine_computes_r16_layer_2_as_the_golden_model_does`). With the output layer's 128,
-the layers take 1,554 + 2r clocks one after another, 1,586 at r = 16, 31.7 µs at 50 MHz. The top
-level may overlap them, since layer 1 hands out an output a clock, as layer 2 takes its inputs. The
-spec estimated 1,550 + 4r. The on-chip cycle counter gives the real figure, `unknown` until it
-does.
+`littlebit_engine_computes_r16_layer_2_as_the_golden_model_does`). Run one after another, the
+three layers would take 1,554 + 2r clocks. The network overlaps them instead. Each engine hands
+its outputs to the next as it makes them, one a clock, and the next takes them as they come:
+
+- Layer 2 takes its first input 784 + 1 + r + 3 clocks after layer 1 takes the first pixel.
+- The output layer takes its first input 256 + 1 + r + 3 clocks after that.
+- It then takes its 128 inputs, adds the last a clock later, and runs the argmax in 10.
+
+That makes 1,187 + 2r clocks from the first pixel to the digit: 1,219 at r = 16, 24.4 µs at
+50 MHz. It is `tested` as both the design's cycle counter and the test count it
+(`littlebit_network_scores_r16s_test_vectors_as_the_golden_model_does`). The spec estimated
+1,550 + 4r. On the board the counter reports it with each answer, `measured` once the network
+runs there.
 
 **The serial link sets the pace.** At 115,200 baud and 10 bits a byte (8N1, assumed), the 785-byte
 request takes 68.1 ms and the 46-byte reply 4.0 ms: at most 13.9 images a second, however fast the
@@ -443,8 +456,15 @@ does not have yet.
 
 | direction | bytes | contents |
 |---|---|---|
-| computer → FPGA | 1 + 784 | header 0xA5, then 784 uint8 pixels |
-| FPGA → computer | 1 + 40 + 1 + 4 | header 0x5A, 10 int32 scores (little-endian), the argmax digit, the cycle count (uint32) |
+| computer → FPGA | 1 + 784 | header 0xA5, then 784 uint8 pixels as MNIST stores them; the FPGA shifts them |
+| FPGA → computer | 1 + 40 + 1 + 4 | header 0x5A, 10 int32 scores (little-endian), the argmax digit, the cycle count (uint32, little-endian) |
+
+The top level, `gateware/littlebit/network.py`, keeps a frame's pixels in a FIFO until the last one
+arrives. Then it feeds them to the network back to back, so the cycle count covers the network
+alone, not the serial link. A frame left part way is dropped after 100 ms of silence, as the one
+layer's was. In cocotb, without the PLL and at a UART divisor of 8, it answers two frames as the
+golden model does, each in 1,219 clocks, and drops a part one
+(`gateware/littlebit/tests/test_network_over_uart.py`).
 
 **Variant A and Variant B in Amaranth**
 
@@ -471,6 +491,21 @@ Those are the toolchain's figures, `trusted` with it (`trusted-base.toml`, `fpga
 the engines alone, with no UART, output layer or top level. Together they take 10,209 of the
 30,000 cells Gate 2 allows. The spec estimated layer 1's U-stage accumulators at a few thousand
 LUTs, and the hardwired ROMs at about 1,000–1,500.
+
+**What the whole network costs.** The board's design: r16's two engines, its output layer, the
+argmax, the cycle counter, the pixel FIFO, the UART, the blinky and the PLL
+(`python -m gateware.littlebit.network <build-dir>`, OSS CAD Suite 2026-11-21, 2026-11-23).
+nextpnr reports:
+
+| r16, the board's design | logic cells (TRELLIS_COMB) | flip-flops | 18 × 18 multipliers | block RAM | Fmax after routing |
+|---|---|---|---|---|---|
+| `littlebit_network` | 12,640 | 3,050 | 20 | 1 DP16KD | 55.63 MHz |
+
+That is within Gate 2's 30,000 at 50 MHz, `trusted` with the toolchain (`fpga-toolchain`). The one
+DP16KD is the pixel FIFO. The Yosys log maps one memory to block RAM,
+`littlebit_network.network.pixels.storage`, so the weights stay logic. The bitstream's sha256 is
+754c51aef2aabe3598296aacbada86a962afd274002b39c0ab929c387d52047b. It hasn't been loaded: the
+network's first board run waits for Gate 2.
 
 ## Verification
 
