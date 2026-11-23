@@ -35,8 +35,14 @@ Hardwired weights are constants of the circuit. A chip built this way runs a net
 already trained: new weights are a new bitstream on the i9, or a new chip in silicon, and training
 stays on a computer. So this step tests the inference half: how accuracy, logic and clock speed
 move as the bits per weight fall. How much a chip with hardwired signs could still learn, by
-changing only its scales, is a first experiment of its own ("Training with the signs fixed"). Whether what it finds carries from a 234,752-weight network to the
-ones above is `unknown` until a later step runs one of them.
+changing only its scales, is a first experiment of its own ("Training with the signs fixed").
+Whether what it finds carries from a 234,752-weight network to the ones above is `unknown` until a
+later step runs one of them.
+
+That is the half the chip is for. Running SocialJax here means running simulations with agents
+already trained: the chip runs their fixed policies, and training them stays on a GPU (Jon,
+2026-11-23). SocialJax's agents learn by reinforcement learning, which changes the policy with
+every update, and hardwired weights can't follow that.
 
 This step drives nothing but a serial port and an LED. What safety first means for a robot is not
 written yet. The rule Tentzhen has so far is the bench's: hard limits live in hardware an AI cannot
