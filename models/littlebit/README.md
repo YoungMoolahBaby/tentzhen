@@ -2,7 +2,8 @@
 
 Project #3's model training, in PyTorch (`docs/littlebit.md`, "Languages and layout"). E1, the
 FP32 baseline, came first. The LittleBit layer at r = 16 came next (`docs/littlebit.md`, "The
-first LittleBit run"), then the baselines E2 and E3 ("The baselines, E2 and E3").
+first LittleBit run"), then the baselines E2 and E3 ("The baselines, E2 and E3"), the rest of
+the rank sweep, and E10, a wider network ("E10, the wider network").
 
 ## Running E1
 
@@ -63,6 +64,21 @@ them, with the same `MNIST_DIR`. Where they differ from r16's recipe is in `trai
 docstring and in `docs/littlebit.md`, "The baselines, E2 and E3". Moving the shared steps out of
 `train_rank.py` left r16's weights as they were: a run after the change gave the committed
 `weights.f32`, byte for byte.
+
+## Running E10, the wider network
+
+E10 is the 784 → 1024 → 512 → 10 MLP at r = 9, the largest rank whose hidden layers hold no more
+bits than E7's (`docs/littlebit.md`, "E10, the wider network"). It needs a start of its own
+shape, trained as E1 was, and then the LittleBit run on it:
+
+    uv run --locked python e1_fp32.py D:\tentzhen-data\mnist runs\e10-start E10-start 1024 512
+    uv run --locked python train_rank.py D:\tentzhen-data\mnist 9 runs\e10 E10 runs\e10-start
+
+On the lab computer they took 17 s and 55 s. The start got 9,856 of the 10,000 test images right
+in float (98.56 %), and E10 got 9,555 (95.55 %). Two runs of each gave the same weights, byte for
+byte (2026-11-23). `e10_scores_what_its_summaries_say` re-scores both, with the same `MNIST_DIR`.
+E10 is exported as r16 is, below. Giving the two scripts a shape left E1, r16 and E2 as they were:
+a run of each after the change gave its committed `weights.f32`, byte for byte.
 
 ## The integer export
 

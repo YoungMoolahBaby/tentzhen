@@ -684,13 +684,13 @@ mod tests {
     /// The output layer's and the whole networks' test vectors: each input's scores and digit are
     /// the golden model's, and the made-up output layer's scores reach both ends of an int32 and
     /// tie, the first of the highest picked over a later one. The sweep's networks, r4, r8, r32
-    /// and r64 and E11's r42, each have a case on r16's images.
+    /// and r64, E11's r42 and E10, the wider network, each have a case on r16's images.
     #[test]
     fn output_and_network_vectors_are_what_the_golden_model_computes() {
         let (net, sweep) = vectors::networks(&root()).unwrap();
         let v = vectors::vectors(&net, &sweep).unwrap();
         let names: Vec<&str> = v.network_cases.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(names, ["r16", "r4", "r8", "r32", "r64", "r42"]);
+        assert_eq!(names, ["r16", "r4", "r8", "r32", "r64", "r42", "E10"]);
         for (case, other) in v.network_cases[1..].iter().zip(&sweep) {
             assert_eq!(case.images, v.network_cases[0].images, "{}", case.name);
             for ((image, scores), &digit) in case.images.iter().zip(&case.scores).zip(&case.digits)
@@ -992,5 +992,161 @@ mod tests {
             (64, 9_815, 9_814, 9_993, 59_886, 0),
         ];
         assert_eq!(got, want);
+    }
+
+    /// E10's start: the 784 -> 1024 -> 512 -> 10 MLP, dense FP32, trained as E1 was.
+    fn e10_start() -> PathBuf {
+        root().join("models/littlebit/runs/e10-start")
+    }
+
+    /// E10: that MLP's hidden layers made LittleBit layers at r = 9, fine-tuned as the sweep was.
+    fn e10() -> PathBuf {
+        root().join("models/littlebit/runs/e10")
+    }
+
+    /// The bits a LittleBit layer of `run` holds, its signs and its 8-bit scales: r (in + out) +
+    /// 8 (in + out + r) (docs/littlebit.md, "Bit accounting"), from the layer's g, h and l.
+    fn littlebit_bits(run: &run::Run, layer: usize) -> usize {
+        let len = |name: &str| run.tensors[&format!("{layer}.{name}")].len();
+        let (inputs, outputs, r) = (len("g"), len("h"), len("l"));
+        r * (inputs + outputs) + 8 * (inputs + outputs + r)
+    }
+
+    /// E10's start and E10 are the runs their summaries name. E10's start is the wider MLP,
+    /// 784 -> 1024 -> 512 -> 10, dense (1,332,224 weights). E10 started from it, its hidden layers
+    /// LittleBit layers at r = 9, and its output layer dense. Both trained on the MNIST the pins
+    /// name. E10's two hidden layers hold 56,992 bits, signs and 8-bit scales, within E7's
+    /// 57,472 (r32's), and at r = 10 they would hold 60,352, past it: r = 9 is the largest rank
+    /// whose hidden layers fit E7's bits.
+    #[test]
+    fn e10_weights_are_the_ones_their_summaries_name() {
+        let pins = mnist::Pins::load(&root()).unwrap().sha256;
+        let start = run::Run::load(&e10_start()).unwrap();
+        let s = &start.summary;
+        let shapes: Vec<(&str, &[usize])> = s
+            .layout
+            .iter()
+            .map(|t| (t.name.as_str(), t.shape.as_slice()))
+            .collect();
+        let want: [(&str, &[usize]); 6] = [
+            ("0.weight", &[1024, 784]),
+            ("0.bias", &[1024]),
+            ("2.weight", &[512, 1024]),
+            ("2.bias", &[512]),
+            ("4.weight", &[10, 512]),
+            ("4.bias", &[10]),
+        ];
+        assert_eq!(shapes, want);
+        assert_eq!(
+            (s.run.as_str(), s.weights, s.parameters),
+            ("E10-start", 1_332_224, 1_333_770)
+        );
+        assert_eq!(s.mnist_sha256, pins);
+
+        let run = run::Run::load(&e10()).unwrap();
+        let s = &run.summary;
+        let shapes: Vec<(&str, &[usize])> = s
+            .layout
+            .iter()
+            .map(|t| (t.name.as_str(), t.shape.as_slice()))
+            .collect();
+        let want: [(&str, &[usize]); 14] = [
+            ("0.g", &[784]),
+            ("0.v", &[784, 9]),
+            ("0.l", &[9]),
+            ("0.u", &[1024, 9]),
+            ("0.h", &[1024]),
+            ("0.bias", &[1024]),
+            ("2.g", &[1024]),
+            ("2.v", &[1024, 9]),
+            ("2.l", &[9]),
+            ("2.u", &[512, 9]),
+            ("2.h", &[512]),
+            ("2.bias", &[512]),
+            ("4.weight", &[10, 512]),
+            ("4.bias", &[10]),
+        ];
+        assert_eq!(shapes, want);
+        assert_eq!(
+            (s.run.as_str(), s.weights, s.parameters),
+            ("E10", 1_332_224, 40_124)
+        );
+        let lb = s.littlebit.as_ref().unwrap();
+        assert_eq!(lb.rank, 9);
+        assert_eq!(lb.start.run, start.summary.run);
+        assert_eq!(lb.start.weights_sha256, start.summary.weights_sha256);
+        assert_eq!(s.mnist_sha256, pins);
+
+        let e7 = run::Run::load(&rank(32)).unwrap();
+        let bits = |run: &run::Run| littlebit_bits(run, 0) + littlebit_bits(run, 2);
+        assert_eq!((bits(&run), bits(&e7)), (56_992, 57_472));
+        // At r = 10, each layer's signs grow by in + out, and its scales by 8.
+        let more = bits(&run) + (784 + 1024) + 8 + (1024 + 512) + 8;
+        assert_eq!(more, 60_352);
+        assert!(bits(&run) <= bits(&e7) && more > bits(&e7));
+    }
+
+    /// E10's start and E10, re-scored here from their committed weights in f32, get right the test
+    /// and training images their summaries say: E10's start, 9,856 and all 60,000; E10, 9,555
+    /// and 57,827.
+    #[test]
+    fn e10_scores_what_its_summaries_say() {
+        let (train, test) = mnist::load(&root(), &mnist_dir()).unwrap();
+        let mut got = Vec::new();
+        for folder in [e10_start(), e10()] {
+            let run = run::Run::load(&folder).unwrap();
+            let s = &run.summary;
+            assert_eq!(run.correct(&[0, 2, 4], &test).unwrap(), s.test_correct);
+            assert_eq!(run.correct(&[0, 2, 4], &train).unwrap(), s.train_correct);
+            got.push((s.run.clone(), s.test_correct, s.train_correct));
+        }
+        let want = [
+            ("E10-start".to_string(), 9_856, 60_000),
+            ("E10".to_string(), 9_555, 57_827),
+        ];
+        assert_eq!(got, want);
+    }
+
+    /// E10's integer.json is what the exporter writes from its committed weights and the 60,000
+    /// training images.
+    #[test]
+    fn e10_integer_json_is_what_the_exporter_writes() {
+        let run = run::Run::load(&e10()).unwrap();
+        let (train, _) = mnist::load(&root(), &mnist_dir()).unwrap();
+        let net = export::export(&run, &[0, 2], 4, &train).unwrap();
+        assert_eq!(net.weights_sha256, run.summary.weights_sha256);
+        let committed = fs::read_to_string(e10().join(export::FILE)).unwrap();
+        assert!(
+            committed == export::to_json(&net),
+            "runs/e10/{} is stale: run `cargo run -p tentzhen-littlebit -- export \
+             models/littlebit/runs/e10`",
+            export::FILE
+        );
+    }
+
+    /// Check 1 for E10: the integer golden model gets at most 0.5 points fewer of the 10,000 test
+    /// images right than the float run, and saturates no latent on the training images, which
+    /// chose its latent shifts. It gets 9,546 test images right, against the float run's 9,555;
+    /// the two pick the same digit on 9,976; it gets 57,803 training images right; and it
+    /// saturates no latent on the test images either.
+    #[test]
+    fn e10_integer_is_within_half_a_point_of_float() {
+        let (train, test) = mnist::load(&root(), &mnist_dir()).unwrap();
+        let run = run::Run::load(&e10()).unwrap();
+        let text = fs::read_to_string(e10().join(export::FILE)).unwrap();
+        let net = integer::Network::parse(&text).unwrap();
+        let p = net.predict(&test).unwrap();
+        let (integer, float) = (p.correct(&test), run.summary.test_correct);
+        assert!(integer + 50 >= float, "{integer} against {float}");
+        let float_digits = run.predict(&[0, 2, 4], &test).unwrap();
+        let same = float_digits
+            .iter()
+            .zip(&p.digits)
+            .filter(|(f, i)| f == i)
+            .count();
+        let t = net.predict(&train).unwrap();
+        assert_eq!(t.saturated, 0, "latents saturated on the training images");
+        let got = (integer, float, same, t.correct(&train), p.saturated);
+        assert_eq!(got, (9_546, 9_555, 9_976, 57_803, 0));
     }
 }

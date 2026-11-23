@@ -2,7 +2,8 @@
 network, `LittleBitNetwork`, on Verilator, run by pytest (docs/littlebit.md, "cocotb tests"),
 against the golden model: on the test vectors crates/littlebit/src/vectors.rs writes
 (littlebit_vectors.json), and on MNIST's test images, check 2 of Gate 2. The rank sweep's other
-networks, r4, r8, r32 and r64, and E11's r42, are each given their test vectors too. r16 runs in
+networks, r4, r8, r32 and r64, E11's r42 and E10, the wider network, are each given their test
+vectors too. r16 runs in
 both variants, its tables in logic (A) and in block RAM (B, E9): on its test vectors, and on all
 10,000 MNIST test images in A and the first 1,000 in B.
 
@@ -42,7 +43,8 @@ PERIOD_NS = 20
 # 276 clocks after that; the output layer takes its 128, adds the last in a clock later, and runs
 # the argmax over its 10 outputs, one a clock, the last raising `done`: 804 + 276 + 128 + 1 + 10.
 R16_CLOCKS = 1_219
-# The networks of the rank sweep's other runs, each a case of the test vectors after r16's.
+# The networks of the rank sweep's other runs, and E10's, each a case of the test vectors after
+# r16's.
 SWEEP = [c["name"] for c in VECTORS["network_cases"][1:]]
 # The MNIST test images r16 is given in each variant: all of them in A, check 2; in B, whose
 # arithmetic is A's and whose every image reads every row of every table, the first 1,000, as the
@@ -62,7 +64,8 @@ def network_clocks(network):
     """The clocks `network` takes for an image, its pixels back to back, as R16_CLOCKS counts them
     for r16: each hidden layer hands its first output on inputs + 1 + rank + 3 clocks after taking
     its first input, and the output layer takes its inputs, adds the last a clock later and runs
-    the argmax, a clock an output. That is 1,187 + 2r for the 784 -> 256 -> 128 -> 10 MLP."""
+    the argmax, a clock an output. That is 1,187 + 2r for the 784 -> 256 -> 128 -> 10 MLP, and
+    2,339 + 2r for E10's 784 -> 1024 -> 512 -> 10."""
     hidden = sum(l["inputs"] + 1 + l["rank"] + 3 for l in network["layers"])
     o = network["output"]
     return hidden + o["inputs"] + 1 + o["outputs"]
@@ -218,9 +221,9 @@ async def littlebit_network_scores_r16s_test_vectors_as_the_golden_model_does(du
 
 @cocotb.test()
 async def littlebit_network_scores_the_sweep_s_test_vectors_as_the_golden_model_does(dut):
-    """One of the rank sweep's other networks, the case LITTLEBIT_CASE names, given r16's six test
-    images: every score and digit is that network's golden model's, and each image takes 1,187 + 2r
-    clocks, 1,195 at r = 4 and 1,315 at r = 64."""
+    """One of the rank sweep's other networks, or E10's, the case LITTLEBIT_CASE names, given
+    r16's six test images: every score and digit is that network's golden model's, and each image
+    takes the clocks network_clocks counts: 1,195 at r = 4, 1,315 at r = 64, and 2,357 for E10."""
     c = next(c for c in VECTORS["network_cases"] if c["name"] == os.environ["LITTLEBIT_CASE"])
     await scores_each_image(dut, c, network_clocks(network_of(c["network"])))
 

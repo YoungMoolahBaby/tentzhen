@@ -2,7 +2,10 @@
 and in float, trained by the recipe's step 1 (Adam, learning rate 1e-3, cosine decay, 20 epochs),
 and its accuracy on the 10,000 test images. From this folder:
 
-    uv run --locked python e1_fp32.py <mnist-folder> <out-folder>
+    uv run --locked python e1_fp32.py <mnist-folder> <out-folder> [<run> <width> <width>]
+
+Given a run's name and two hidden widths, it trains that MLP instead, in the same way: E10's start,
+784 -> 1024 -> 512 -> 10, is `e1_fp32.py <mnist-folder> runs\\e10-start E10-start 1024 512`.
 
 It writes two files to the out folder: weights.f32, every parameter as little-endian float32 one
 after another in the order and shapes summary.json's `layout` gives, and summary.json, what was
@@ -41,13 +44,18 @@ LEARNING_RATE = 1e-3
 WIDTHS = [784, 256, 128, 10]
 
 
-def model():
+def model(widths=WIDTHS):
     layers = []
-    for i, (n_in, n_out) in enumerate(zip(WIDTHS, WIDTHS[1:])):
+    for i, (n_in, n_out) in enumerate(zip(widths, widths[1:])):
         layers.append(nn.Linear(n_in, n_out))
-        if i < len(WIDTHS) - 2:
+        if i < len(widths) - 2:
             layers.append(nn.ReLU())
     return nn.Sequential(*layers)
+
+
+def shape(widths):
+    """The MLP's widths as the summaries write them: "784 -> 256 -> 128 -> 10"."""
+    return " -> ".join(str(w) for w in widths)
 
 
 @torch.no_grad()
@@ -56,7 +64,7 @@ def correct(net, x, y):
     return int((net(x).argmax(1) == y).sum())
 
 
-def main(mnist_folder, out_folder):
+def main(mnist_folder, out_folder, run="E1", widths=WIDTHS):
     torch.manual_seed(SEED)
     torch.use_deterministic_algorithms(True)
     torch.backends.cudnn.benchmark = False
@@ -72,9 +80,10 @@ def main(mnist_folder, out_folder):
 
     xtr, ytr, xte, yte = images(train_x), labels(train_y), images(test_x), labels(test_y)
 
-    net = model().to(device)
+    net = model(widths).to(device)
     weights = sum(m.weight.numel() for m in net if isinstance(m, nn.Linear))
-    assert weights == 234_752, weights  # docs/littlebit.md, "Model"
+    if widths == WIDTHS:
+        assert weights == 234_752, weights  # docs/littlebit.md, "Model"
     steps_per_epoch = math.ceil(len(xtr) / BATCH)
     opt = torch.optim.Adam(net.parameters(), lr=LEARNING_RATE)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=EPOCHS * steps_per_epoch)
@@ -107,8 +116,8 @@ def main(mnist_folder, out_folder):
     out.mkdir(parents=True, exist_ok=True)
     layout, sha256 = write_weights(net, out / "weights.f32")
     summary = {
-        "run": "E1",
-        "model": "784 -> 256 -> 128 -> 10 MLP, dense FP32, ReLU between layers",
+        "run": run,
+        "model": f"{shape(widths)} MLP, dense FP32, ReLU between layers",
         "weights": weights,
         "parameters": sum(p.numel() for p in net.parameters()),
         "recipe": {
@@ -148,6 +157,9 @@ def main(mnist_folder, out_folder):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
+    if len(sys.argv) == 3:
+        main(sys.argv[1], sys.argv[2])
+    elif len(sys.argv) == 6:
+        main(sys.argv[1], sys.argv[2], sys.argv[3], [784, int(sys.argv[4]), int(sys.argv[5]), 10])
+    else:
         sys.exit(__doc__)
-    main(sys.argv[1], sys.argv[2])

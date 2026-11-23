@@ -9,7 +9,8 @@
 //! layers, as `models/littlebit/runs/r16/integer.json` has them, and a small convolution whose
 //! layer is made up here, applied to each window of its grid ([`integer::windows`]). The output
 //! layer's are r16's, and one made up here whose scores reach both ends of an int32 and tie. The
-//! whole network's are r16's and the rank sweep's others' ([`SWEEP`]), each given the same images.
+//! whole network's are r16's and those of [`SWEEP`], the rank sweep's others and E10's, each given
+//! the same images.
 //!
 //! For MNIST's test images, [`mnist`] makes the whole network's case at the time it is needed,
 //! into a file outside the repo, as the full-network cocotb test does.
@@ -26,14 +27,15 @@ pub const FILE: &str = "gateware/cores/tests/littlebit_vectors.json";
 pub const R16: &str = "models/littlebit/runs/r16/integer.json";
 
 /// Where the rank sweep's other integer networks are, relative to the repo root: r = 4, 8, 32 and
-/// 64, E4, E5, E7 and E8, then r = 42, E11, the largest that fit (docs/littlebit.md,
-/// "Experiments"). Each has a whole-network case.
-pub const SWEEP: [&str; 5] = [
+/// 64, E4, E5, E7 and E8, then r = 42, E11, the largest that fit, then E10, the wider network
+/// (docs/littlebit.md, "Experiments"). Each has a whole-network case.
+pub const SWEEP: [&str; 6] = [
     "models/littlebit/runs/r4/integer.json",
     "models/littlebit/runs/r8/integer.json",
     "models/littlebit/runs/r32/integer.json",
     "models/littlebit/runs/r64/integer.json",
     "models/littlebit/runs/r42/integer.json",
+    "models/littlebit/runs/e10/integer.json",
 ];
 
 /// The integer networks at [`R16`] and at each of [`SWEEP`], in its order, read from under the
