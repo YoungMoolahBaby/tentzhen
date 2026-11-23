@@ -17,7 +17,7 @@ from amaranth import Signal
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge
 
-from gateware.littlebit.network import ANSWER, FRAME, NetworkOverUART, r16
+from gateware.littlebit.network import ANSWER, FRAME, PIXELS, NetworkOverUART, r16
 from gateware.sim import run
 
 DIVISOR = 8
@@ -77,13 +77,16 @@ async def send(dut, data):
 
 
 async def receive(dut, n):
-    """Reads `n` bytes from the design's TX line, each bit in its middle."""
+    """Reads `n` bytes from the design's TX line, each bit in its middle. It listens from before
+    the frame is sent, so it waits for the frame's 785 bytes, the network and the answer, with
+    room to spare."""
     got = []
-    budget = 0
+    clock = 0
+    budget = 2 * (1 + PIXELS + n) * 10 * DIVISOR + 2 * R16_CLOCKS
     while len(got) < n:
         await FallingEdge(dut.clk)
-        budget += 1
-        assert budget < (n + 10) * 20 * DIVISOR + 2 * R16_CLOCKS, f"{len(got)} of {n} bytes came"
+        clock += 1
+        assert clock < budget, f"{len(got)} of {n} bytes came in {clock} clocks"
         if int(dut.uart_tx.value):
             continue
         await cycles(dut, DIVISOR // 2)
