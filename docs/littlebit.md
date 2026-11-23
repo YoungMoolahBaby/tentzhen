@@ -279,9 +279,9 @@ about as many as its signs at r = 8.
 | 64 | 66,560 | 0.332 | 0.376 |
 
 `tested`: `the_littlebit_bit_counts_follow_from_the_formula` recomputes this table from the formula,
-and the experiments' bits-per-weight column from it. Layer 2 (256 → 128) uses the same r. The
-baselines have the same shape: dense FP32, dense int8, and plain binary weights (1 bit per weight,
-one scale per output).
+and the experiments' bits-per-weight column from it, E3's binary row too. Layer 2 (256 → 128) uses
+the same r. The baselines have the same shape: dense FP32, dense int8, and plain binary weights
+(1 bit per weight, one scale per output).
 
 **Training recipe** (Jon's spec):
 
@@ -339,6 +339,48 @@ moved between 9,418 and 9,686 over the first 19 epochs, and rose as the learning
 Whether a smaller learning rate or the paper's distillation would do better is `unknown`. A run
 that chooses between them should choose on images held out of the training set, not on the test
 images.
+
+**The baselines, E2 and E3** (`models/littlebit/train_baseline.py`, 2026-11-23). They follow r16's
+recipe in everything but the hidden layers, so a baseline and a LittleBit run differ only there.
+Each starts from E1's committed weights, with pixels as ⌊p / 2⌋ / 128, uint8 activations whose
+exponents are fixed before training, E1's training settings and a dense output layer. What
+differs was chosen before the runs:
+
+- **E2, int8.** The hidden layers are dense. Their weights stay float in training, as the output
+  layer's do, and the exporter makes them int8, each matrix on one power-of-two grid, as it makes
+  the output layer's. Check 1 measures what that costs.
+- **E3, binary.** Each hidden layer is y = h ⊙ (sign(W) x) + b, with one scale per output. W
+  starts as E1's weights, each h as the mean of |W| along its output's row, and b as E1's bias.
+  That h is the scale that brings h sign(W) closest to W in squared error. The sign and its
+  gradient are r16's.
+
+| run | test images right, float | integer | the same digit, float and integer | training images right, float | activation exponents |
+|---|---|---|---|---|---|
+| E2, int8 | 9,835 (98.35 %) | 9,833 (98.33 %) | 9,992 | 60,000 | −4, −3 |
+| E3, binary | 9,824 (98.24 %) | 9,824 (98.24 %) | 9,991 | 60,000 | −4, −4 |
+
+These counts are `tested`. `e2_scores_what_its_summary_says` and `e3_scores_what_its_summary_says`
+re-score the committed weights in f32 (`models/littlebit/runs/e2` and `e3`), and
+`e2_and_e3_integer_are_within_half_a_point_of_float` exports them as integers and scores them. So
+check 1 holds for both: E2 loses 2 images to its int8 weights, and E3 loses none in all, though
+its integer and float models pick different digits on 9 images. Two runs of each gave the same weights, byte for byte, in 24 s (E2) and 38 s (E3) on the
+lab computer's GPU.
+
+A baseline runs on the computer only, so its integer network is not written to a file. The test
+exports it from the committed weights as it scores it (`export::baseline` in `crates/littlebit`).
+E2's hidden weights land on a grid of 2^−7, and E3's scales on one of 2^−9.
+
+What the counts show:
+
+- **E2 in float gets 4 more test images right than E1,** 9,835 against 9,831. Several things
+  could explain it: the hardware's pixel and activation grids, 20 more epochs, or chance. Which
+  one it is, is `unknown`, since no run separates them.
+- **E3, at about 1 bit a weight, is 7 images under E1** and 107 above r16's integer model, which
+  has 0.125 bits a weight in layer 1.
+- **Both get all 60,000 training images right,** as E1 does. r16 gets 58,798.
+
+Each started where its summary says, before fine-tuning: E2 at 9,828 test images right, E3 at
+8,535. Those are PyTorch's counts, and no test re-checks them.
 
 **Fixed-point formats,** fixed at export and the same in the golden model and the gateware:
 
@@ -632,8 +674,8 @@ Phase 0 may run beside Phase 1: it needs only the board and the toolchain.
    from the computer echo back.
 2. **Phase 1, the model on the computer.** Train E1–E3 and the LittleBit sweep; write the golden
    model and the exporter. **Gate 1:** check 1 at r = 16, the integer model within 0.5 points of
-   float. Check 1 passed on 2026-11-22 (Verification). E2, E3 and the sweep's other ranks are not
-   run yet.
+   float. Check 1 passed on 2026-11-22 (Verification). E2 and E3 ran on 2026-11-23 (Model, "The
+   baselines, E2 and E3"). The sweep's other ranks are not run yet.
 3. **Phase 2, gateware and simulation.** The weight-ROM generator, the layer engine and the top
    level; cocotb on Verilator. **Gate 2:** check 2, bit-exact on all 10,000 test images, and at most
    30,000 LUTs at 50 MHz in nextpnr's report. The network's first board run waits for this gate.
@@ -699,6 +741,11 @@ Gate 0's echo goes through the same DAPLink serial port as the bench's Phase 1 "
   (`crates/littlebit/src/board.rs`, 2026-11-23): it scored 1,000 MNIST test images exactly as the
   golden model, 1,219 clocks each, `measured`, `2026-11-23-i9-littlebit-network`. Next, Phase 4:
   the experiments, E2 to E12.
+- [x] Train the baselines E2 (int8) and E3 (binary, one scale per output), and export them as
+  integers (`models/littlebit/train_baseline.py`, 2026-11-23). E2 got 9,833 of the 10,000 test
+  images right as integers (9,835 in float). E3 got 9,824 both ways. Both are `tested` by
+  `e2_and_e3_integer_are_within_half_a_point_of_float`. Next, the sweep's other ranks: 4, 8, 32
+  and 64.
 
 ## Experiments
 
@@ -709,8 +756,8 @@ Each cell fills as its run finishes, from the run's record or test.
 | run | model (784 → 256 → 128 → 10 unless noted) | variant | layer-1 total bpw | integer test acc (%) | LUTs | EBR blocks | Fmax (MHz) | images/s | status |
 |---|---|---|---|---|---|---|---|---|---|
 | E1 | FP32 dense (the ceiling) | computer only | 32 | 98.31 (float) | | | | | done |
-| E2 | int8 dense | computer only | 8 | | | | | | planned |
-| E3 | binary dense, one scale per output | computer only | about 1.0 | | | | | | planned |
+| E2 | int8 dense | computer only | 8 | 98.33 (float 98.35) | — | — | — | — | done |
+| E3 | binary dense, one scale per output | computer only | 1.010 | 98.24 (float 98.24) | — | — | — | — | done |
 | E4 | LittleBit r = 4 | A, hardwired | 0.062 | | | | | | planned |
 | E5 | LittleBit r = 8 | A, hardwired | 0.083 | | | | | | planned |
 | E6 | LittleBit r = 16 | A, hardwired | 0.125 | 97.17 (float 97.13) | 12,640 | 1 (the pixel FIFO) | 55.63 | 13.73 end to end; 1,219 clocks each, 41,017 at 50 MHz | Gate 3 passed |
@@ -720,6 +767,10 @@ Each cell fills as its run finishes, from the run's record or test.
 | E10 | the same weight bits as E7, wider: 784 → 1024 → 512 → 10 | A, hardwired | set to match E7 | | | | | | planned |
 | E11 | the largest fit: raise r until place-and-route or 50 MHz fails | A, hardwired | | | | | | | planned |
 | E12 | clock push: E6, LittleBit r = 16, at the highest clock that passes | A, hardwired | 0.125 | | | | | | planned |
+
+A dash marks a figure that a computer-only run doesn't have. E3's 1.010 bits a weight are its
+signs and one 8-bit scale per output, (784 × 256 + 8 × 256) / (784 × 256). Like the LittleBit
+formula, it counts no bias, and no power-of-two exponent.
 
 The headline results are two plots made from this table once it is full: accuracy vs. total bits
 per weight (E1–E8), and LUTs vs. sign bits for Variant A (E4–E8, E11).

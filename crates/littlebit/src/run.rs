@@ -8,8 +8,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-/// What `models/littlebit/runfiles.py` writes as `summary.json`, for `e1_fp32.py` and for
-/// `train_rank.py`, whose runs alone have `littlebit`.
+/// What `models/littlebit/runfiles.py` writes as `summary.json`, for `e1_fp32.py`, for
+/// `train_rank.py`, whose runs alone have `littlebit`, and for `train_baseline.py`, whose runs alone
+/// have `quantized`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Summary {
@@ -22,6 +23,7 @@ pub struct Summary {
     pub parameters: usize,
     pub recipe: Recipe,
     pub littlebit: Option<LittleBit>,
+    pub quantized: Option<Quantized>,
     pub mnist_sha256: BTreeMap<String, String>,
     pub train_correct: usize,
     pub train_images: usize,
@@ -68,6 +70,26 @@ pub struct LittleBit {
     pub init_test_correct: usize,
 }
 
+/// What a baseline run, E2 or E3, adds: how its hidden layers' weights are kept, the run it
+/// started from, and the grid its activations are on.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Quantized {
+    /// `int8`, dense layers whose weights are float in training and int8 at export, or `binary`,
+    /// h * (sign(W) x) + b with one scale per output ([`Run::predict`] refuses any other).
+    pub weights: String,
+    pub start: Start,
+    pub init: String,
+    /// How a binary run's signs are taken; an int8 run has none.
+    pub sign: Option<String>,
+    pub activations: String,
+    /// As a LittleBit run's are: for each layer but the last, the e of its outputs' grid.
+    pub activation_exponents: Vec<i32>,
+    /// PyTorch's count on the test images as the run started, before fine-tuning. Nothing here
+    /// re-checks it.
+    pub init_test_correct: usize,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Start {
@@ -106,6 +128,13 @@ pub struct Run {
 enum Layer<'a> {
     /// `w` is out x in, row-major.
     Dense { w: &'a [f32], b: &'a [f32] },
+    /// y = h * (S x) + b: `s` is the signs of the latent weights, out x in, each +1 where the
+    /// latent weight is >= 0 and -1 elsewhere, as `littlebit.Sign` has them.
+    Binary {
+        s: Vec<f32>,
+        h: &'a [f32],
+        b: &'a [f32],
+    },
     /// y = h * (U_s (l * (V_s^T (g * x)))) + b: `v` is V's signs, in x r, and `u` U's, out x r,
     /// each +1 where the latent weight is >= 0 and -1 elsewhere, as `littlebit.Sign` has them.
     LittleBit {
@@ -142,6 +171,24 @@ impl Layer<'_> {
                             .iter()
                             .zip(x)
                             .fold(0.0f32, |s, (&wi, &xi)| s + wi * xi)
+                            + bias
+                    })
+                    .collect())
+            }
+            Layer::Binary { s, h, b } => {
+                let n_in = x.len();
+                if s.len() != h.len() * n_in {
+                    return Err(format!("takes {} inputs, not {n_in}", s.len() / h.len()));
+                }
+                Ok(h.iter()
+                    .zip(b.iter())
+                    .enumerate()
+                    .map(|(o, (&h, &bias))| {
+                        s[o * n_in..(o + 1) * n_in]
+                            .iter()
+                            .zip(x)
+                            .fold(0.0f32, |sum, (&si, &xi)| sum + xi * si)
+                            * h
                             + bias
                     })
                     .collect())
@@ -210,8 +257,10 @@ impl Run {
         Ok(Run { summary, tensors })
     }
 
-    /// Layer `i`: a Linear if the run has `<i>.weight` and `<i>.bias`, a LittleBit layer if it
-    /// has `<i>.g`, `.v`, `.l`, `.u`, `.h` and `.bias` and the summary gives its rank.
+    /// Layer `i`: a binary layer if the run has `<i>.weight`, `.h` and `.bias` and its summary
+    /// says its weights are binary; a Linear if it has `<i>.weight` and `<i>.bias` alone; a
+    /// LittleBit layer if it has `<i>.g`, `.v`, `.l`, `.u`, `.h` and `.bias` and the summary gives
+    /// its rank.
     fn layer(&self, i: usize) -> Result<Layer<'_>, String> {
         let get = |name: &str| self.tensors.get(&format!("{i}.{name}")).map(Vec::as_slice);
         let missing = || format!("no layer {i} in the layout");
@@ -220,7 +269,19 @@ impl Run {
             if w.len() % b.len() != 0 {
                 return Err(format!("layer {i}'s weight is not a whole number of rows"));
             }
-            return Ok(Layer::Dense { w, b });
+            let binary = self
+                .summary
+                .quantized
+                .as_ref()
+                .is_some_and(|q| q.weights == "binary");
+            return match get("h") {
+                None => Ok(Layer::Dense { w, b }),
+                Some(h) if binary && h.len() == b.len() => Ok(Layer::Binary { s: signs(w), h, b }),
+                Some(_) => Err(format!(
+                    "layer {i} has a weight and an h, but is not a binary layer as the summary \
+                     gives it"
+                )),
+            };
         }
         let (g, v, l, u, h) = match (get("g"), get("v"), get("l"), get("u"), get("h")) {
             (Some(g), Some(v), Some(l), Some(u), Some(h)) => (g, v, l, u, h),
@@ -263,28 +324,41 @@ impl Run {
             .count())
     }
 
-    /// The digit the run's MLP predicts for each image: layers `linears`, in order, each a Linear
-    /// or a LittleBit layer ([`Layer`]), with pixels entering as the recipe's `pixels` says.
-    /// Between layers, a ReLU, or for a LittleBit run its activations' grid. The predicted digit
-    /// is the first of the largest scores. Every product and sum is f32.
+    /// The digit the run's MLP predicts for each image: layers `linears`, in order, each a Linear,
+    /// a binary layer or a LittleBit layer ([`Layer`]), with pixels entering as the recipe's
+    /// `pixels` says. Between layers, a ReLU, or for a LittleBit run or a baseline its activations'
+    /// grid. The predicted digit is the first of the largest scores. Every product and sum is f32.
     pub fn predict(&self, linears: &[usize], set: &Images) -> Result<Vec<usize>, String> {
         let pixel: fn(u8) -> f32 = match self.summary.recipe.pixels.as_str() {
             "x / 255" => |p| p as f32 / 255.0,
             "floor(p / 2) / 128" => |p| (p >> 1) as f32 / 128.0,
             other => return Err(format!("pixels {other:?} is no mapping this crate knows")),
         };
-        let steps: Option<Vec<f32>> = match &self.summary.littlebit {
+        let exponents = match (&self.summary.littlebit, &self.summary.quantized) {
+            (None, None) => None,
+            (Some(lb), None) => Some(&lb.activation_exponents),
+            (None, Some(q)) if q.weights == "int8" || q.weights == "binary" => {
+                Some(&q.activation_exponents)
+            }
+            (None, Some(q)) => {
+                return Err(format!(
+                    "weights {:?} is no kind this crate knows",
+                    q.weights
+                ));
+            }
+            (Some(_), Some(_)) => {
+                return Err("the summary is both a LittleBit run and a baseline".into());
+            }
+        };
+        let steps: Option<Vec<f32>> = match exponents {
             None => None,
-            Some(lb) if lb.activation_exponents.len() + 1 == linears.len() => Some(
-                lb.activation_exponents
-                    .iter()
-                    .map(|&e| 2f32.powi(e))
-                    .collect(),
-            ),
-            Some(lb) => {
+            Some(e) if e.len() + 1 == linears.len() => {
+                Some(e.iter().map(|&e| 2f32.powi(e)).collect())
+            }
+            Some(e) => {
                 return Err(format!(
                     "{} activation exponents for the {} gaps between {} layers",
-                    lb.activation_exponents.len(),
+                    e.len(),
                     linears.len().saturating_sub(1),
                     linears.len()
                 ));

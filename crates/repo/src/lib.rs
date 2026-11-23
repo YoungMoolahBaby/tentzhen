@@ -160,7 +160,7 @@ mod tests {
 
     /// docs/littlebit.md's rank sweep for layer 1 follows from its bit-accounting formula, and so
     /// does the layer-1 total bits per weight of every run in its experiments table that names its
-    /// rank.
+    /// rank, and of E3, whose binary layer has a sign per weight and an 8-bit scale per output.
     #[test]
     fn the_littlebit_bit_counts_follow_from_the_formula() {
         let doc = fs::read_to_string(root().join("docs/littlebit.md")).unwrap();
@@ -200,8 +200,19 @@ mod tests {
             assert_eq!(row[3], format!("{:.3}", total(r)), "total bpw at r = {r}");
         }
         assert_eq!(sweep.len(), 5, "the sweep's ranks are 4, 8, 16, 32 and 64");
+        let table = rows("| run | model");
+        // E3's binary layer: a sign per weight and an 8-bit scale per output.
+        let binary = table
+            .iter()
+            .find(|row| row[1].starts_with("binary dense, one scale per output"))
+            .expect("the experiments table has E3, binary dense");
+        assert_eq!(
+            binary[3],
+            format!("{:.3}", (weights + 8.0 * outputs) / weights),
+            "E3's layer-1 total bpw"
+        );
         let mut runs = 0;
-        for row in rows("| run | model") {
+        for row in table {
             let Some(rest) = row[1].split("r = ").nth(1) else {
                 continue;
             };

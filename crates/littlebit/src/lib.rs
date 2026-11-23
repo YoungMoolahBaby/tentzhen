@@ -29,6 +29,14 @@ mod tests {
         root().join("models/littlebit/runs/r16")
     }
 
+    fn e2() -> PathBuf {
+        root().join("models/littlebit/runs/e2")
+    }
+
+    fn e3() -> PathBuf {
+        root().join("models/littlebit/runs/e3")
+    }
+
     /// The folder MNIST was fetched into, from MNIST_DIR. A test that needs MNIST fails without
     /// it rather than passing unchecked; the Quality Gate fetches MNIST and sets it.
     fn mnist_dir() -> PathBuf {
@@ -97,6 +105,15 @@ mod tests {
                     .contains("unknown field")
             );
         }
+        let text = fs::read_to_string(e3().join("summary.json")).unwrap();
+        assert!(run::Summary::parse(&text).unwrap().quantized.is_some());
+        let nested = text.replacen("\"sign\"", "\"extra\": 1, \"sign\"", 1);
+        assert_ne!(nested, text);
+        assert!(
+            run::Summary::parse(&nested)
+                .unwrap_err()
+                .contains("unknown field")
+        );
     }
 
     /// A run is scored only by arithmetic this crate knows: a summary naming another pixel
@@ -124,6 +141,22 @@ mod tests {
         let e1 = run::Run::load(&e1()).unwrap();
         assert!(e1.correct(&[0, 2], &one).is_ok());
         assert!(run.correct(&[0, 2], &one).unwrap_err().contains("gaps"));
+        // A baseline's weights are scored only as the kind its summary names.
+        let binary = run::Run::load(&e3()).unwrap();
+        assert!(binary.correct(&[0, 2, 4], &one).is_ok());
+        let text = fs::read_to_string(e3().join("summary.json")).unwrap();
+        let kind = |k: &str| {
+            let changed = text.replace("\"weights\": \"binary\"", &format!("\"weights\": \"{k}\""));
+            assert_ne!(changed, text);
+            run::Run {
+                summary: run::Summary::parse(&changed).unwrap(),
+                tensors: binary.tensors.clone(),
+            }
+            .correct(&[0, 2, 4], &one)
+            .unwrap_err()
+        };
+        assert!(kind("int8").contains("not a binary layer"));
+        assert!(kind("ternary").contains("no kind this crate knows"));
     }
 
     /// E1's committed weights are the ones its summary names, in the shapes of the 784 -> 256 ->
@@ -258,6 +291,196 @@ mod tests {
             run.summary.train_correct
         );
         assert_eq!(run.summary.train_correct, 58_798);
+    }
+
+    /// E2's and E3's committed weights are the ones their summaries name, in the shapes of E1's
+    /// MLP: E2's layers 0, 2 and 4 dense, as E1's are; E3's layers 0 and 2 binary, a latent
+    /// weight (out x in), one h per output and a bias, and layer 4 dense. Each started from E1's
+    /// committed weights, trained on the MNIST the pins name.
+    #[test]
+    fn e2_and_e3_weights_are_the_ones_their_summaries_name() {
+        let e1 = run::Run::load(&e1()).unwrap();
+        let dense: [(&str, &[usize]); 6] = [
+            ("0.weight", &[256, 784]),
+            ("0.bias", &[256]),
+            ("2.weight", &[128, 256]),
+            ("2.bias", &[128]),
+            ("4.weight", &[10, 128]),
+            ("4.bias", &[10]),
+        ];
+        let binary: [(&str, &[usize]); 8] = [
+            ("0.weight", &[256, 784]),
+            ("0.h", &[256]),
+            ("0.bias", &[256]),
+            ("2.weight", &[128, 256]),
+            ("2.h", &[128]),
+            ("2.bias", &[128]),
+            ("4.weight", &[10, 128]),
+            ("4.bias", &[10]),
+        ];
+        for (folder, name, kind, want, parameters) in [
+            (e2(), "E2", "int8", &dense[..], 235_146),
+            (e3(), "E3", "binary", &binary[..], 235_530),
+        ] {
+            let run = run::Run::load(&folder).unwrap();
+            let s = &run.summary;
+            let shapes: Vec<(&str, &[usize])> = s
+                .layout
+                .iter()
+                .map(|t| (t.name.as_str(), t.shape.as_slice()))
+                .collect();
+            assert_eq!(shapes, want, "{name}");
+            assert_eq!(
+                (s.run.as_str(), s.weights, s.parameters),
+                (name, 234_752, parameters)
+            );
+            assert!(s.littlebit.is_none(), "{name}");
+            let q = s.quantized.as_ref().unwrap();
+            assert_eq!(q.weights, kind);
+            assert_eq!(q.sign.is_some(), kind == "binary", "{name}");
+            assert_eq!(q.start.run, e1.summary.run);
+            assert_eq!(q.start.weights_sha256, e1.summary.weights_sha256);
+            assert_eq!(s.mnist_sha256, mnist::Pins::load(&root()).unwrap().sha256);
+        }
+    }
+
+    /// E2, E1's MLP fine-tuned on the hardware's pixels and uint8 activations, its weights float,
+    /// re-scored here from its committed weights, gets right the images its summary says: 9,835
+    /// of the 10,000 test images (98.35 %) and all 60,000 training images. The summary's counts
+    /// came from PyTorch on a GPU; these come from this crate's own f32 arithmetic on the CPU.
+    #[test]
+    fn e2_scores_what_its_summary_says() {
+        let run = run::Run::load(&e2()).unwrap();
+        let (train, test) = mnist::load(&root(), &mnist_dir()).unwrap();
+        let layers = [0, 2, 4];
+        let s = &run.summary;
+        assert_eq!(run.correct(&layers, &test).unwrap(), s.test_correct);
+        assert_eq!(run.correct(&layers, &train).unwrap(), s.train_correct);
+        assert_eq!((s.test_correct, s.train_correct), (9_835, 60_000));
+    }
+
+    /// E3, binary hidden layers with one scale per output, re-scored here from its committed
+    /// weights, gets right the images its summary says: 9,824 of the 10,000 test images (98.24 %)
+    /// and all 60,000 training images, with the latent weights' signs as
+    /// `models/littlebit/littlebit.py` has them.
+    #[test]
+    fn e3_scores_what_its_summary_says() {
+        let run = run::Run::load(&e3()).unwrap();
+        let (train, test) = mnist::load(&root(), &mnist_dir()).unwrap();
+        let layers = [0, 2, 4];
+        let s = &run.summary;
+        assert_eq!(run.correct(&layers, &test).unwrap(), s.test_correct);
+        assert_eq!(run.correct(&layers, &train).unwrap(), s.train_correct);
+        assert_eq!((s.test_correct, s.train_correct), (9_824, 60_000));
+    }
+
+    /// Check 1 on the baselines: exported as integers, E2 gets 9,833 of the 10,000 test images
+    /// right against its float run's 9,835, and E3 gets 9,824 against 9,824, each within 0.5
+    /// points. The integer and float models pick the same digit on 9,992 and 9,991 of them.
+    #[test]
+    fn e2_and_e3_integer_are_within_half_a_point_of_float() {
+        let (_, test) = mnist::load(&root(), &mnist_dir()).unwrap();
+        for (folder, want, want_same) in
+            [(e2(), (9_833, 9_835), 9_992), (e3(), (9_824, 9_824), 9_991)]
+        {
+            let run = run::Run::load(&folder).unwrap();
+            let net = export::baseline(&run, &[0, 2], 4).unwrap();
+            assert_eq!(net.weights_sha256, run.summary.weights_sha256);
+            let p = net.predict(&test).unwrap();
+            let (integer, float) = (p.correct(&test), run.summary.test_correct);
+            assert!(
+                integer + 50 >= float,
+                "{}: {integer} against {float}",
+                run.summary.run
+            );
+            assert_eq!((integer, float), want, "{}", run.summary.run);
+            let float_digits = run.predict(&[0, 2, 4], &test).unwrap();
+            let same = float_digits
+                .iter()
+                .zip(&p.digits)
+                .filter(|(f, i)| f == i)
+                .count();
+            assert_eq!(same, want_same, "{}", run.summary.run);
+        }
+    }
+
+    /// Two small baseline layers, worked by hand: an int8 one, z = W x + b, and a binary one,
+    /// z = h (S x) + b; each output z >> shift, clamped to 0..255.
+    #[test]
+    fn a_baseline_layer_computes_what_its_steps_say() {
+        let int8 = integer::HiddenLayer {
+            inputs: 3,
+            outputs: 2,
+            input_exponent: 0,
+            weight: vec![vec![127, -128, 2], vec![-1, 0, 1]],
+            weight_exponent: 0,
+            h: None,
+            bias: vec![-5, 40],
+            output_shift: 3,
+            output_exponent: 3,
+        };
+        // 127 * 10 - 128 * 2 + 2 * 255 - 5 = 1,519; -10 + 255 + 40 = 285.
+        assert_eq!(int8.z(&[10, 2, 255]).unwrap(), [1_519, 285]);
+        // 1,519 >> 3 = 189; 285 >> 3 = 35.
+        assert_eq!(int8.y(&[10, 2, 255]).unwrap(), [189, 35]);
+        // -128 * 10 - 5 = -1,285, >> 3 = -161, clamped to 0; 0 + 40 = 40, >> 3 = 5.
+        assert_eq!(int8.z(&[0, 10, 0]).unwrap(), [-1_285, 40]);
+        assert_eq!(int8.y(&[0, 10, 0]).unwrap(), [0, 5]);
+        let binary = integer::HiddenLayer {
+            inputs: 3,
+            outputs: 2,
+            input_exponent: 0,
+            weight: vec![vec![1, -1, 1], vec![-1, -1, 1]],
+            weight_exponent: 0,
+            h: Some(integer::Scales {
+                h: vec![3, -2],
+                exponent: 0,
+            }),
+            bias: vec![-1, 7],
+            output_shift: 1,
+            output_exponent: 1,
+        };
+        // (255 - 1 + 4) * 3 - 1 = 773; (-255 - 1 + 4) * -2 + 7 = 511.
+        assert_eq!(binary.z(&[255, 1, 4]).unwrap(), [773, 511]);
+        // 773 >> 1 = 386, clamped to 255; 511 >> 1 = 255.
+        assert_eq!(binary.y(&[255, 1, 4]).unwrap(), [255, 255]);
+        // (0 - 3 + 0) * 3 - 1 = -10, >> 1 = -5, clamped to 0; (0 - 3 + 0) * -2 + 7 = 13, >> 1 = 6.
+        assert_eq!(binary.z(&[0, 3, 0]).unwrap(), [-10, 13]);
+        assert_eq!(binary.y(&[0, 3, 0]).unwrap(), [0, 6]);
+        assert!(binary.z(&[1, 2]).is_err());
+    }
+
+    /// A baseline's integer network is refused unless its shapes fit together, its exponents add
+    /// up, and a layer with an h has only +1 and -1 for weights.
+    #[test]
+    fn a_baseline_network_refuses_what_does_not_fit() {
+        let run = run::Run::load(&e3()).unwrap();
+        let fresh = || export::baseline(&run, &[0, 2], 4).unwrap();
+        fresh().check().unwrap();
+        let mut not_binary = fresh();
+        not_binary.layers[0].weight[3][5] = 2;
+        let mut shift = fresh();
+        shift.layers[1].output_shift += 1;
+        let mut short = fresh();
+        short.layers[0].h.as_mut().unwrap().h.pop();
+        let mut pixels = fresh();
+        pixels.pixel_shift = 2;
+        let mut output = fresh();
+        output.output.bias.pop();
+        for (bad, why) in [
+            (not_binary, "not +1 and -1"),
+            (shift, "add up"),
+            (short, "not as long as its outputs"),
+            (pixels, "not the outputs before it"),
+            (output, "not its shape"),
+        ] {
+            let refused = bad.check().unwrap_err();
+            assert!(refused.contains(why), "{refused}");
+        }
+        let int8 = export::baseline(&run::Run::load(&e2()).unwrap(), &[0, 2], 4).unwrap();
+        int8.check().unwrap();
+        assert!(int8.layers.iter().all(|l| l.h.is_none()));
+        assert!(export::baseline(&run::Run::load(&r16()).unwrap(), &[0, 2], 4).is_err());
     }
 
     fn r16_integer() -> integer::Network {

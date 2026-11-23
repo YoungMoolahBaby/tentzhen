@@ -1,6 +1,7 @@
 //! The integer network a run exports, as `models/littlebit/runs/<run>/integer.json` holds it, and
 //! the golden model that runs it (docs/littlebit.md, "Fixed-point formats" and "The golden
-//! model"). Every value is an integer, every widening is written out, and an overflow is an error,
+//! model"); and a baseline's integer network, E2's or E3's, which is not written out
+//! ([`Baseline`]). Every value is an integer, every widening is written out, and an overflow is an error,
 //! never a wrap. A right shift (`>>`) is arithmetic, so it rounds toward minus infinity, as the
 //! gateware's will; nothing rounds to nearest.
 //!
@@ -71,6 +72,51 @@ pub struct DenseLayer {
     pub weight: Vec<Vec<i8>>,
     pub weight_exponent: i32,
     pub bias: Vec<i32>,
+}
+
+/// A baseline's integer network, E2's or E3's ([`crate::export::baseline`]): dense hidden layers,
+/// int8 or binary, then one dense output layer. The baselines run on the computer only, so no
+/// gateware reads this and it is not written out: a test exports it from the run's committed
+/// weights as it scores it.
+#[derive(Debug, PartialEq)]
+pub struct Baseline {
+    pub run: String,
+    pub weights_sha256: String,
+    /// As a [`Network`]'s: a pixel p enters as p >> pixel_shift.
+    pub pixel_shift: u32,
+    pub layers: Vec<HiddenLayer>,
+    pub output: DenseLayer,
+}
+
+/// One hidden layer of a baseline, from uint8 inputs x to uint8 outputs y:
+///
+/// 1. s_o = sum over i of weight[o][i] x_i, an int32;
+/// 2. z_o = s_o * h_o + bias_o, an int32, or s_o + bias_o for a layer with no h;
+/// 3. y_o = z_o >> output_shift, clamped to 0..255.
+///
+/// E2's weights are int8 on one grid, 2^weight_exponent, and it has no h. E3's are +1 or -1, with a
+/// weight exponent of 0, and one int8 scale h per output, on one grid 2^h_exponent. The exponents
+/// add up, input_exponent + weight_exponent + h_exponent + output_shift = output_exponent, which
+/// [`Baseline::check`] checks.
+#[derive(Debug, PartialEq)]
+pub struct HiddenLayer {
+    pub inputs: usize,
+    pub outputs: usize,
+    pub input_exponent: i32,
+    /// outputs x inputs.
+    pub weight: Vec<Vec<i8>>,
+    pub weight_exponent: i32,
+    pub h: Option<Scales>,
+    pub bias: Vec<i32>,
+    pub output_shift: u32,
+    pub output_exponent: i32,
+}
+
+/// One int8 scale per output, each standing for h * 2^exponent.
+#[derive(Debug, PartialEq)]
+pub struct Scales {
+    pub h: Vec<i8>,
+    pub exponent: i32,
 }
 
 /// One row of a sign matrix, each entry +1 or -1, written as a string of `+` and `-`.
@@ -271,6 +317,129 @@ impl DenseLayer {
             })
             .collect()
     }
+
+    /// What is wrong with the output layer's shape, if anything, after layers whose outputs are
+    /// `inputs` values on the grid 2^`exponent`.
+    fn check_after(&self, inputs: usize, exponent: i32) -> Result<(), String> {
+        if (self.inputs, self.input_exponent) != (inputs, exponent) {
+            return Err("the output layer's inputs are not the outputs before it".into());
+        }
+        if self.weight.len() != self.outputs
+            || self.bias.len() != self.outputs
+            || self.weight.iter().any(|row| row.len() != self.inputs)
+        {
+            return Err("the output layer's weight or bias is not its shape".into());
+        }
+        Ok(())
+    }
+}
+
+impl HiddenLayer {
+    /// Steps 1 and 2 for input `x`: each output's z.
+    pub fn z(&self, x: &[u8]) -> Result<Vec<i32>, String> {
+        if x.len() != self.inputs {
+            return Err(format!("{} inputs for a layer of {}", x.len(), self.inputs));
+        }
+        let overflow = |what: &str| format!("{what} overflows an int32");
+        self.weight
+            .iter()
+            .zip(&self.bias)
+            .enumerate()
+            .map(|(o, (row, &b))| {
+                // An int8 times a uint8 fits an int32 with room to spare; the sum may not.
+                let s = row
+                    .iter()
+                    .zip(x)
+                    .try_fold(0i32, |s, (&w, &x)| {
+                        s.checked_add(i32::from(w) * i32::from(x))
+                    })
+                    .ok_or_else(|| overflow("a weighted sum"))?;
+                let h = self.h.as_ref().map_or(1, |h| i64::from(h.h[o]));
+                i32::try_from(i64::from(s) * h + i64::from(b)).map_err(|_| overflow("s * h + bias"))
+            })
+            .collect()
+    }
+
+    /// The layer's outputs for input `x`: step 3 on each z.
+    pub fn y(&self, x: &[u8]) -> Result<Vec<u8>, String> {
+        Ok(self
+            .z(x)?
+            .iter()
+            .map(|&z| (z >> self.output_shift).clamp(0, 255) as u8)
+            .collect())
+    }
+}
+
+impl Baseline {
+    /// What is wrong with the network's shapes or exponents, if anything: as a [`Network`]'s
+    /// are checked, and a layer with an h has only +1 and -1 for weights, on a grid of 2^0.
+    pub fn check(&self) -> Result<(), String> {
+        if self.pixel_shift > 7 {
+            return Err(format!(
+                "a pixel shift of {} leaves no pixel",
+                self.pixel_shift
+            ));
+        }
+        let mut inputs = 784;
+        let mut exponent = self.pixel_shift as i32 - 8;
+        for (j, l) in self.layers.iter().enumerate() {
+            let bad = |what: &str| Err(format!("layer {j}: {what}"));
+            if (l.inputs, l.input_exponent) != (inputs, exponent) {
+                return bad("its inputs are not the outputs before it");
+            }
+            if l.weight.len() != l.outputs
+                || l.bias.len() != l.outputs
+                || l.weight.iter().any(|row| row.len() != l.inputs)
+            {
+                return bad("its weight or bias is not its shape");
+            }
+            let h_exponent = match &l.h {
+                None => 0,
+                Some(h) => {
+                    if h.h.len() != l.outputs {
+                        return bad("h is not as long as its outputs");
+                    }
+                    if l.weight_exponent != 0 || l.weight.iter().flatten().any(|w| w.abs() != 1) {
+                        return bad("it has an h, but its weights are not +1 and -1 on 2^0");
+                    }
+                    h.exponent
+                }
+            };
+            if l.output_shift > 31 {
+                return bad("a shift is wider than the value it shifts");
+            }
+            let sum = l.input_exponent + l.weight_exponent + h_exponent + l.output_shift as i32;
+            if sum != l.output_exponent {
+                return bad(&format!(
+                    "its exponents add up to {sum}, not its output exponent {}",
+                    l.output_exponent
+                ));
+            }
+            (inputs, exponent) = (l.outputs, l.output_exponent);
+        }
+        self.output.check_after(inputs, exponent)
+    }
+
+    /// The scores for one image.
+    pub fn scores(&self, pixels: &[u8]) -> Result<Vec<i32>, String> {
+        let mut x: Vec<u8> = pixels.iter().map(|&p| p >> self.pixel_shift).collect();
+        for layer in &self.layers {
+            x = layer.y(&x)?;
+        }
+        self.output.scores(&x)
+    }
+
+    /// The digit each image of `set` scores highest, [`argmax`]. A baseline has no latents, so
+    /// none is saturated.
+    pub fn predict(&self, set: &Images) -> Result<Predictions, String> {
+        let digits = (0..set.len())
+            .map(|k| self.scores(set.image(k)).map(|s| argmax(&s)))
+            .collect::<Result<_, _>>()?;
+        Ok(Predictions {
+            digits,
+            saturated: 0,
+        })
+    }
 }
 
 /// The index of the highest score, the first if two tie, as the FPGA's argmax picks it.
@@ -344,17 +513,7 @@ impl Network {
             }
             (inputs, exponent) = (l.outputs, l.output_exponent);
         }
-        let o = &self.output;
-        if (o.inputs, o.input_exponent) != (inputs, exponent) {
-            return Err("the output layer's inputs are not the outputs before it".into());
-        }
-        if o.weight.len() != o.outputs
-            || o.bias.len() != o.outputs
-            || o.weight.iter().any(|row| row.len() != o.inputs)
-        {
-            return Err("the output layer's weight or bias is not its shape".into());
-        }
-        Ok(())
+        self.output.check_after(inputs, exponent)
     }
 
     /// The scores for one image, and how many latents were saturated on the way.
