@@ -221,7 +221,7 @@ mod tests {
             assert_eq!(row[3], bpw, "{}'s layer-1 total bpw", row[0]);
             runs += 1;
         }
-        assert_eq!(runs, 7, "E4 to E9 and E12 name their rank");
+        assert_eq!(runs, 8, "E4 to E9, E11 and E12 name their rank");
     }
 
     /// docs/littlebit.md's table of Clean Up's policy follows from its shapes: a layer's weights
