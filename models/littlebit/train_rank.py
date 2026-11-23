@@ -2,7 +2,11 @@
 MLP with its two hidden layers made LittleBit layers at rank r, started from E1's committed weights
 (runs/e1) and fine-tuned by the recipe's steps 2-4. The output layer stays dense. From this folder:
 
-    uv run --locked python train_rank.py <mnist-folder> <rank> <out-folder>
+    uv run --locked python train_rank.py <mnist-folder> <rank> <out-folder> [<run> <start-folder>]
+
+Given a run's name and another start, a dense run of the same form as E1 with other hidden widths,
+it makes that MLP's hidden layers LittleBit layers instead: E10 is `train_rank.py <mnist-folder> 9
+runs\\e10 E10 runs\\e10-start`.
 
 It writes weights.f32 and summary.json to the out folder as e1_fp32.py does (runfiles.py), and
 crates/littlebit re-scores them with its own arithmetic (`r16_scores_what_its_summary_says`, for
@@ -43,7 +47,7 @@ import torch.nn.functional as F
 from torch import nn
 
 import mnist
-from e1_fp32 import BATCH, EPOCHS, LEARNING_RATE, SEED, correct
+from e1_fp32 import BATCH, EPOCHS, LEARNING_RATE, SEED, correct, shape
 from littlebit import Activations, LittleBitLinear, exponent_for
 from runfiles import read_run, write_summary, write_weights
 
@@ -66,12 +70,18 @@ RECIPE = {
 
 
 def output_layer(start):
-    """E1's output layer, as it is."""
-    out = nn.Linear(128, 10)
+    """The start's output layer, as it is: E1's, unless another start is given."""
+    out = nn.Linear(start["4.weight"].shape[1], start["4.weight"].shape[0])
     with torch.no_grad():
         out.weight.copy_(start["4.weight"])
         out.bias.copy_(start["4.bias"])
     return out
+
+
+def widths(start):
+    """The widths of the start's MLP, from its input to its outputs."""
+    w = [start["0.weight"].shape[1]]
+    return w + [start[f"{i}.weight"].shape[0] for i in (0, 2, 4)]
 
 
 def model(start, rank):
@@ -194,12 +204,12 @@ def write_run(out_folder, net, head, data, curve, seconds):
     )
 
 
-def main(mnist_folder, rank, out_folder):
+def main(mnist_folder, rank, out_folder, run=None, start_folder=E1):
     device = setup()
     data = hardware_mnist(mnist_folder, device)
     xtr, _, xte, yte = data
 
-    start_summary, start = read_run(E1)
+    start_summary, start = read_run(start_folder)
     net = model(start, rank).to(device)
     calibrate(net, xtr)
     exponents = [net[1].exponent, net[3].exponent]
@@ -213,9 +223,9 @@ def main(mnist_folder, rank, out_folder):
 
     curve, seconds = fine_tune(net, *data)
     head = {
-        "run": f"r{rank}",
+        "run": run or f"r{rank}",
         "model": (
-            f"784 -> 256 -> 128 -> 10 MLP: layers 0 and 2 LittleBit at r = {rank}, each followed by "
+            f"{shape(widths(start))} MLP: layers 0 and 2 LittleBit at r = {rank}, each followed by "
             "uint8 activations; layer 4 dense float"
         ),
         "weights": start_summary["weights"],
@@ -239,6 +249,9 @@ def main(mnist_folder, rank, out_folder):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4:
+    if len(sys.argv) == 4:
+        main(sys.argv[1], int(sys.argv[2]), sys.argv[3])
+    elif len(sys.argv) == 6:
+        main(sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], Path(sys.argv[5]))
+    else:
         sys.exit(__doc__)
-    main(sys.argv[1], int(sys.argv[2]), sys.argv[3])

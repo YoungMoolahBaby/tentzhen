@@ -160,7 +160,9 @@ mod tests {
 
     /// docs/littlebit.md's rank sweep for layer 1 follows from its bit-accounting formula, and so
     /// does the layer-1 total bits per weight of every run in its experiments table that names its
-    /// rank, and of E3, whose binary layer has a sign per weight and an 8-bit scale per output.
+    /// rank, E10's at its own widths, and of E3, whose binary layer has a sign per weight and an
+    /// 8-bit scale per output. So does its table of E7's and E10's bits, in which E10's rank is
+    /// the largest whose hidden layers hold no more bits than E7's.
     #[test]
     fn the_littlebit_bit_counts_follow_from_the_formula() {
         let doc = fs::read_to_string(root().join("docs/littlebit.md")).unwrap();
@@ -211,17 +213,51 @@ mod tests {
             format!("{:.3}", (weights + 8.0 * outputs) / weights),
             "E3's layer-1 total bpw"
         );
+        let number = |text: &str| -> f64 {
+            let digits: String = text.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse().unwrap()
+        };
         let mut runs = 0;
         for row in table {
             let Some(rest) = row[1].split("r = ").nth(1) else {
                 continue;
             };
-            let r: String = rest.chars().take_while(char::is_ascii_digit).collect();
-            let bpw = format!("{:.3}", total(r.parse().unwrap()));
-            assert_eq!(row[3], bpw, "{}'s layer-1 total bpw", row[0]);
+            // A run of another shape names it, as E10's "784 → 1024 → 512 → 10": its layer 1 is
+            // 784 -> 1024.
+            let outputs = row[1].split("784 → ").nth(1).map_or(outputs, number);
+            let r = number(rest);
+            let bpw = (r * (inputs + outputs) + 8.0 * (inputs + outputs + r)) / (inputs * outputs);
+            assert_eq!(
+                row[3],
+                format!("{bpw:.3}"),
+                "{}'s layer-1 total bpw",
+                row[0]
+            );
             runs += 1;
         }
-        assert_eq!(runs, 8, "E4 to E9, E11 and E12 name their rank");
+        assert_eq!(runs, 9, "E4 to E12 name their rank");
+
+        // E10's budget: each row's sign bits, 8-bit scales and their sum over the two hidden
+        // layers, and the output layer's int8 weights, follow from its widths and rank.
+        let budget = rows("| run | widths | r | sign bits |");
+        for row in &budget {
+            let widths: Vec<f64> = row[1].split(" → ").map(number).collect();
+            let r = number(&row[2]);
+            let hidden = [(widths[0], widths[1]), (widths[1], widths[2])];
+            let signs: f64 = hidden.iter().map(|(i, o)| r * (i + o)).sum();
+            let scales: f64 = hidden.iter().map(|(i, o)| 8.0 * (i + o + r)).sum();
+            let output = 8.0 * widths[2] * widths[3];
+            let want = [signs, scales, signs + scales, output].map(|n| format!("{n}"));
+            let got = [3, 4, 5, 6].map(|k| row[k].replace(',', ""));
+            assert_eq!(got, want, "{}'s bits", row[0]);
+        }
+        let names: Vec<&str> = budget.iter().map(|row| row[0].as_str()).collect();
+        assert_eq!(names, ["E7", "E10", "E10's shape at r = 10"]);
+        let total = |k: usize| number(&budget[k][5].replace(',', ""));
+        assert!(
+            total(1) <= total(0) && total(2) > total(0),
+            "E10's r = 9 is the largest that fits E7's bits"
+        );
     }
 
     /// docs/littlebit.md's table of Clean Up's policy follows from its shapes: a layer's weights

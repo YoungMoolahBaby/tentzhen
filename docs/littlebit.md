@@ -414,6 +414,58 @@ What the counts show:
 Before fine-tuning, Dual-SVID's starts got 2,906, 4,164, 5,282 and 5,303 test images right at
 r = 4, 8, 32 and 64. Those are PyTorch's counts, and no test re-checks them.
 
+**E10, the wider network** (`models/littlebit/e1_fp32.py` and `train_rank.py`, 2026-11-23).
+Research question 2 asks whether, at the same weight bits, a wider network at fewer bits a weight
+beats a narrower one at more. E10 is the 784 → 1024 → 512 → 10 MLP, made LittleBit as the sweep's
+are, at the rank whose hidden layers hold E7's bits. What "the same weight bits" means was fixed
+before training: the two hidden layers' bits, signs and 8-bit scales, as "Bit accounting" counts
+them. r = 9 is the largest rank whose hidden layers hold no more than E7's:
+
+| run | widths | r | sign bits | 8-bit scales | the hidden layers' bits | the output layer's int8 weights |
+|---|---|---|---|---|---|---|
+| E7 | 784 → 256 → 128 → 10 | 32 | 45,568 | 11,904 | 57,472 | 10,240 |
+| E10 | 784 → 1024 → 512 → 10 | 9 | 30,096 | 26,896 | 56,992 | 40,960 |
+| E10's shape at r = 10 | 784 → 1024 → 512 → 10 | 10 | 33,440 | 26,912 | 60,352 | 40,960 |
+
+`tested`: `the_littlebit_bit_counts_follow_from_the_formula` recomputes this table from the widths,
+and `e10_weights_are_the_ones_their_summaries_name` recomputes E10's and E7's hidden-layer bits from
+their committed runs. The output layer can't be held to E7's. It stays dense int8, and with 512
+inputs its weights alone hold 30,720 bits more than E7's, more than the hidden layers could give
+up. So E10 holds more bits in all, and the budget is the hidden layers'. Neither counts the biases.
+
+E10 needs a start of its own shape, as the sweep starts from E1. E10's start is that MLP, dense in
+FP32, trained as E1 was (`e1_fp32.py`, given the widths). E10 is r16's run on it at r = 9, with
+nothing else changed (`train_rank.py`, given the start), and it is exported as r16 is:
+
+| run | test images right, float | integer | the same digit, float and integer | training images right, float / integer | latents saturated, test images | activation exponents |
+|---|---|---|---|---|---|---|
+| E10's start, dense FP32 | 9,856 (98.56 %) | — | — | 60,000 / — | — | — |
+| E10, r = 9 | 9,555 (95.55 %) | 9,546 (95.46 %) | 9,976 | 57,827 / 57,803 | 0 | −5, −5 |
+| E7, r = 32 | 9,772 (97.72 %) | 9,776 (97.76 %) | 9,993 | 59,602 / 59,597 | 0 | −5, −5 |
+
+`tested`: `e10_scores_what_its_summaries_say`, `e10_integer_json_is_what_the_exporter_writes` and
+`e10_integer_is_within_half_a_point_of_float` (`models/littlebit/runs/e10-start` and `e10`). Two
+runs of each gave the same weights, byte for byte, in 17 s for the start and 55 s for E10. Moving
+the shape out of the two scripts left E1, r16 and E2 as they were: run again, each gave its
+committed weights, byte for byte.
+
+What it answers, for research question 2:
+
+- **At E7's bits, the wider network loses.** E10 gets 9,546 test images right as integers, 230
+  fewer than E7's 9,776. Its dense start gets 25 more than E1, 9,856 against 9,831, so the width
+  helps in float and not at this budget.
+- **Its scales hold nearly half its bits.** At these widths E10's 8-bit scales hold 26,896 bits,
+  against E7's 11,904. That leaves its signs 30,096 bits, at r = 9, against E7's 45,568 at
+  r = 32. Whether that is why it loses is `unknown`.
+- **As integers it lands between E5 and E6,** r = 8 and r = 16 of the narrow network: 9,463 and
+  9,717.
+- **Check 1 holds,** 9 images fewer as integers.
+
+That is one recipe at one seed, without the paper's distillation or residual compensation, at one
+budget. Whether a wider network would win with them, or at a larger budget, is `unknown`. Before
+fine-tuning, E10's Dual-SVID start got 4,849 test images right, PyTorch's count, which no test
+re-checks.
+
 **Fixed-point formats,** fixed at export and the same in the golden model and the gateware:
 
 - Input pixels: uint8, 0–255 scaled to 0–127.
@@ -774,6 +826,27 @@ What it shows:
   chip. The PLL is `measured` only at 50 MHz (`2026-11-23-i9-pll-echo`). A board run at
   59.375 MHz, scored against the golden model as check 3 was, would make E12 `measured`.
 
+**E10 on the board's design** (2026-11-23). E10, the wider network at E7's bits ("E10, the wider
+network", in Model), is built as the sweep's ranks are, from its own integer network
+(`python -m gateware.littlebit.network <build-dir> models/littlebit/runs/e10/integer.json`, OSS
+CAD Suite 2026-11-21). nextpnr reports, beside E7:
+
+| run | widths | r | logic cells (TRELLIS_COMB) | flip-flops | 18 × 18 multipliers | block RAM | Fmax after routing | clocks an image | bitstream's sha256 |
+|---|---|---|---|---|---|---|---|---|---|
+| E7 | 784 → 256 → 128 → 10 | 32 | 20,172 | 4,973 | 20 | 1 DP16KD | 50.43 MHz | 1,251 | `1b92ff46…` |
+| E10 | 784 → 1024 → 512 → 10 | 9 | 17,455 | 2,258 | 20 | 1 DP16KD | 53.52 MHz | 2,357 | `c7fc7532…` |
+
+The build figures are nextpnr's, `trusted` (`fpga-toolchain`), and a second build of E10 gave the
+same bitstream, byte for byte. The clocks are cocotb's: E10 scores r16's six test images as its
+golden model does, in 2,357 clocks each
+(`littlebit_network_scores_the_sweep_s_test_vectors_as_the_golden_model_does`). That is
+784 + 1 + 9 + 3 for layer 1, 1,024 + 1 + 9 + 3 for layer 2 and 512 + 1 + 10 for the output layer,
+as the network's schedule counts them (Clocks per image, above). No board has run E10.
+
+So at E7's bits, E10 fits the board, in 2,717 fewer cells and at a faster clock than E7. It takes
+1,106 more clocks an image, 47.1 µs at 50 MHz, or 21,213 images a second. It gets 230 fewer test
+images right.
+
 ## Verification
 
 Every stage must match the integer golden model bit for bit; accuracy is compared only at the step
@@ -864,7 +937,8 @@ inside the bitstream.
   the test's own temporary folder (`cargo run -p tentzhen-littlebit -- mnist-vectors <count>
   <file>`). The sweep's other networks, r4, r8, r32 and r64, are each given r16's six test images,
   and checked for every score, the digit and 1,187 + 2r clocks an image
-  (`littlebit_network_scores_the_sweep_s_test_vectors_as_the_golden_model_does`). r16 in Variant B,
+  (`littlebit_network_scores_the_sweep_s_test_vectors_as_the_golden_model_does`). So are E11's
+  r42, and E10, the wider network, in its own count of 2,357 clocks. r16 in Variant B,
   E9, is given its test vectors and MNIST's first 1,000 test images, as the board was given in
   check 3. Its arithmetic is Variant A's, and every image reads every row of every table, so the
   gate doesn't spend another 10,000 images on it. A top-level test
@@ -883,7 +957,8 @@ and checks the summary's counts, on MNIST the Quality Gate fetches and the test 
 each file is its pin (`models/littlebit/mnist.toml`). The gate does not retrain: GitHub's runners
 have no GPU, and a GPU's and a CPU's float products differ, so a retrain there would grade another
 model. Weights are committed because a grade must be re-checkable, and because rebuilding a run's
-bitstream needs them; they are small (E1's are 0.9 MB). Gateware tests stay cocotb, as the language
+bitstream needs them. They are small: E1's are 0.9 MB, and the largest, E10's dense start's,
+5.3 MB. Gateware tests stay cocotb, as the language
 policy has them, and a cocotb test is a referent as a Rust test is, named `gateware <name>`:
 `a_code_referent_names_code_that_exists` finds them, and the Quality Gate runs them on Verilator
 from OSS CAD Suite's Linux build of 2026-11-21, the lab computer's day. A Rust test wrapping
@@ -985,7 +1060,12 @@ Gate 0's echo goes through the same DAPLink serial port as the bench's Phase 1 "
   (Hardware architecture, "E9, the weights in block RAM").
 - [x] Push r16's clock, E12, through the clocks the PLL makes from 25 MHz (2026-11-23): it closes
   at 59.375 MHz in nextpnr, and misses at 60 and 62.5 (Hardware architecture, "E12, the highest
-  clock that closes"). Next: E10, the wider network, then the two plots.
+  clock that closes").
+- [x] Train E10, the 784 → 1024 → 512 → 10 network at r = 9, whose hidden layers hold no more
+  bits than E7's, from a dense start of its own; export it and build it (2026-11-23). It gets
+  9,546 test images right as integers, 230 fewer than E7, in 17,455 logic cells at 53.52 MHz
+  (Model, "E10, the wider network"; Hardware architecture, "E10 on the board's design"). Next:
+  the two plots, which close Gate 4.
 
 ## Experiments
 
@@ -1004,7 +1084,7 @@ Each cell fills as its run finishes, from the run's record or test.
 | E7 | LittleBit r = 32 | A, hardwired | 0.209 | 97.76 (float 97.72) | 20,172 | 1 (the pixel FIFO) | 50.43 | 1,251 clocks each, 39,968 at 50 MHz | built; not run on the board |
 | E8 | LittleBit r = 64 | A, hardwired | 0.376 | 98.15 (float 98.14) | 35,139 | 1 (the pixel FIFO) | 49.55, short of 50 | 1,315 clocks each; 50 MHz not met | over the cell budget, and short of 50 MHz |
 | E9 | LittleBit r = 16 | B, block RAM | 0.125 | 97.17 (float 97.13): E6's integer network | 7,400 | 14 (13 for the weights, 1 the pixel FIFO) | 54.35 | 1,219 clocks each, 41,017 at 50 MHz | built; not run on the board |
-| E10 | the same weight bits as E7, wider: 784 → 1024 → 512 → 10 | A, hardwired | set to match E7 | | | | | | planned |
+| E10 | LittleBit r = 9, wider: 784 → 1024 → 512 → 10, its hidden layers' bits within E7's | A, hardwired | 0.038 | 95.46 (float 95.55) | 17,455 | 1 (the pixel FIFO) | 53.52 | 2,357 clocks each, 21,213 at 50 MHz | built; not run on the board |
 | E11 | LittleBit r = 42, the largest fit: r raised until place-and-route or 50 MHz fails | A, hardwired | 0.261 | 97.95 (float 97.96) | 24,934 | 1 (the pixel FIFO) | 50.29 | 1,271 clocks each, 39,339 at 50 MHz | built; not run on the board |
 | E12 | clock push: E6, LittleBit r = 16, at the highest clock that passes, 59.375 MHz | A, hardwired | 0.125 | 97.17 (float 97.13) | 12,632 | 1 (the pixel FIFO) | 59.78, clocked at 59.375 | 1,219 clocks each, 48,708 at 59.375 MHz | built; not run on the board |
 
