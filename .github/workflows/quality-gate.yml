@@ -66,11 +66,15 @@ jobs:
           MNIST_DIR: ${{ runner.temp }}/mnist
       # The gateware's cocotb tests, on Verilator, with OSS CAD Suite's Linux build of the same day
       # as the lab computer's. The archive is cached, and checked against its sha256 every run.
+      # The full-network test has the golden model score MNIST's 10,000 test images, by `cargo
+      # run`, into its own temporary folder, so it needs MNIST too.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/oss-cad-suite-linux-x64-20261121.tgz
           key: oss-cad-suite-linux-x64-20261121
       - name: The gateware's cocotb tests, on Verilator from OSS CAD Suite 2026-11-21
+        env:
+          MNIST_DIR: ${{ runner.temp }}/mnist
         run: |
           f="$RUNNER_TEMP/oss-cad-suite-linux-x64-20261121.tgz"
           [ -f "$f" ] || curl -sSfL -o "$f" "https://github.com/YosysHQ/oss-cad-suite-build/releases/download/2026-11-21/oss-cad-suite-linux-x64-20261121.tgz"

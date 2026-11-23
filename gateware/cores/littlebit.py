@@ -1,7 +1,8 @@
 """The LittleBit layer engine (docs/littlebit.md, "Hardware architecture"): one LittleBit layer
 from `integer.json`, its integers hardwired into logic (Variant A), applied to a stream of input
 vectors. An MLP layer is the one-vector case; a convolution streams the window around each
-position of its grid (docs/littlebit.md, "After MNIST").
+position of its grid (docs/littlebit.md, "After MNIST"). Below it, the output layer,
+`DenseEngine`, and a whole network, `LittleBitNetwork`, its engines one after another.
 
 It computes what the golden model computes (`LittleBitLayer::trace` in
 crates/littlebit/src/integer.rs), in three stages a vector:
@@ -36,9 +37,9 @@ fast it closes, are nextpnr's to report: `python -m gateware.cores.littlebit` wr
 alone as Verilog, for Yosys and nextpnr.
 """
 
-from amaranth import Const, Elaboratable, Module, Mux, Signal, signed, unsigned
+from amaranth import Array, Const, Elaboratable, Module, Mux, Signal, signed, unsigned
 
-__all__ = ["ROM", "LittleBitEngine", "Alone", "sign_bits"]
+__all__ = ["ROM", "LittleBitEngine", "DenseEngine", "LittleBitNetwork", "Alone", "sign_bits"]
 
 # The largest product of a uint8 input and an int8 scale, in size: 255 * 128.
 P_MAX = 255 * 128
@@ -242,6 +243,184 @@ class LittleBitEngine(Elaboratable):
                     m.next = "V"
                 with m.Else():
                     m.d.sync += o.eq(o + 1)
+        return m
+
+
+class DenseEngine(Elaboratable):
+    """The output layer, `dense` as integer.json holds it (a dict), applied to each vector of
+    uint8s streamed into `x`, then the argmax: what `DenseLayer::scores` and `argmax` compute in
+    crates/littlebit/src/integer.rs.
+
+    One input a clock, for `inputs` clocks, and one more: each input and its column of the weights
+    are kept for a clock, then every output's accumulator adds the input times its weight, one
+    multiplier each, starting from its bias. Then the argmax, one output a clock for `outputs`
+    clocks: the first of the highest scores wins, as the golden model's does.
+
+    In: `x`, `x_valid` and `x_ready`, as the LittleBit engine's. Out: `scores`, an int32 for each
+    output, and `digit`, the index of the first highest. Both are valid on the clock `done` is
+    high, and held until the clock after the next vector's first input is taken. A vector takes
+    inputs + 1 + outputs clocks, and the last of them raises `done`.
+
+    The accumulators are as wide as the scores can get, from the weights and biases, so none
+    wraps; a layer whose scores could pass an int32 is refused, as the golden model refuses one
+    that does."""
+
+    def __init__(self, dense):
+        self.inputs = dense["inputs"]
+        self.outputs = dense["outputs"]
+        weight, bias = dense["weight"], dense["bias"]
+        if len(weight) != self.outputs or len(bias) != self.outputs:
+            raise ValueError("the weight or the bias is not as long as the layer's outputs")
+        if any(len(row) != self.inputs for row in weight):
+            raise ValueError("a row of the weight is not as long as the layer's inputs")
+        # Every partial sum lies between its bias plus the negative weights' share and its bias
+        # plus the positive weights', each input at most 255.
+        self.low = min(b + 255 * sum(w for w in row if w < 0) for row, b in zip(weight, bias))
+        self.high = max(b + 255 * sum(w for w in row if w > 0) for row, b in zip(weight, bias))
+        if self.low < -(1 << 31) or self.high > (1 << 31) - 1:
+            raise ValueError(f"a score could reach {self.low} or {self.high}, past an int32")
+        self.dense = dense
+        self.x = Signal(8)
+        self.x_valid = Signal()
+        self.x_ready = Signal()
+        self.scores = [Signal(signed(32), name=f"score_{o}") for o in range(self.outputs)]
+        self.digit = Signal(range(max(self.outputs, 2)))
+        self.done = Signal()
+
+    def ports(self):
+        return [self.x, self.x_valid, self.x_ready, *self.scores, self.digit, self.done]
+
+    def elaborate(self, platform):
+        m = Module()
+        weight, bias = self.dense["weight"], self.dense["bias"]
+        n_in, n_out = self.inputs, self.outputs
+
+        # Input i's column of the weights: output o's int8 in bits 8o to 8o + 7.
+        columns = [sum((weight[o][i] & 0xFF) << (8 * o) for o in range(n_out)) for i in range(n_in)]
+        m.submodules.w = w = ROM(columns, unsigned(8 * n_out))
+
+        i = Signal(range(max(n_in, 2)))
+        j = Signal(range(max(n_out, 2)))
+        acc = [Signal(range(self.low, self.high + 1), name=f"acc_{o}") for o in range(n_out)]
+        m.d.comb += [score.eq(a) for score, a in zip(self.scores, acc)]
+
+        # The input and its column, kept; a clock later, each product added in.
+        x_1 = Signal(8)
+        w_1 = Signal(unsigned(8 * n_out))
+        first_1 = Signal()
+        valid_1 = Signal()
+        m.d.comb += w.index.eq(i)
+        m.d.sync += valid_1.eq(0)
+        with m.If(valid_1):
+            for o in range(n_out):
+                start = Mux(first_1, Const(bias[o], acc[o].shape()), acc[o])
+                m.d.sync += acc[o].eq(start + x_1 * w_1.word_select(o, 8).as_signed())
+
+        best = Signal(range(self.low, self.high + 1))
+        m.d.sync += self.done.eq(0)
+        with m.FSM():
+            with m.State("sum"):
+                m.d.comb += self.x_ready.eq(1)
+                with m.If(self.x_valid):
+                    m.d.sync += [x_1.eq(self.x), w_1.eq(w.data), first_1.eq(i == 0), valid_1.eq(1)]
+                    with m.If(i == n_in - 1):
+                        m.d.sync += i.eq(0)
+                        m.next = "last"
+                    with m.Else():
+                        m.d.sync += i.eq(i + 1)
+            # The clock on which the last input is added in.
+            with m.State("last"):
+                m.next = "argmax"
+            with m.State("argmax"):
+                score = Array(acc)[j]
+                with m.If((j == 0) | (score > best)):
+                    m.d.sync += [best.eq(score), self.digit.eq(j)]
+                with m.If(j == n_out - 1):
+                    m.d.sync += [j.eq(0), self.done.eq(1)]
+                    m.next = "sum"
+                with m.Else():
+                    m.d.sync += j.eq(j + 1)
+        return m
+
+
+class LittleBitNetwork(Elaboratable):
+    """A whole network, `network` as integer.json holds it (a dict), one image at a time: what
+    `Network::scores` and `Network::predict` compute in crates/littlebit/src/integer.rs.
+
+    Each pixel is shifted right by the network's pixel shift into the first LittleBit layer's
+    engine. Each engine's outputs go straight into the next engine, and the last's into the output
+    layer, `DenseEngine`, as they come, one a clock. None of them has to wait for the one before
+    to finish, and none can be handed an output it isn't ready for: the network takes an image's
+    first pixel only once the image before is done, so each engine is idle when its first input
+    of an image comes, and takes all its inputs back to back.
+
+    In: `x`, an image's pixels in order, each taken on a clock when `x_valid` and `x_ready` are
+    both high. Out: `scores`, `digit` and `done`, as the output layer's, and `cycles`, a uint32:
+    the clocks the image took, from the one that took its first pixel to the one that raised
+    `done`, both counted. The next image's first pixel can be taken on the clock `done` is high."""
+
+    def __init__(self, network):
+        layers, dense = network["layers"], network["output"]
+        inputs = 784
+        for j, layer in enumerate(layers):
+            if layer["inputs"] != inputs:
+                raise ValueError(f"layer {j} takes {layer['inputs']} inputs, not {inputs}")
+            inputs = layer["outputs"]
+        if dense["inputs"] != inputs:
+            raise ValueError(f"the output layer takes {dense['inputs']} inputs, not {inputs}")
+        self.pixel_shift = network["pixel_shift"]
+        self.engines = [LittleBitEngine(layer) for layer in layers]
+        self.dense = DenseEngine(dense)
+        self.x = Signal(8)
+        self.x_valid = Signal()
+        self.x_ready = Signal()
+        self.scores = self.dense.scores
+        self.digit = self.dense.digit
+        self.done = self.dense.done
+        self.cycles = Signal(32)
+
+    def ports(self):
+        return [
+            self.x, self.x_valid, self.x_ready, *self.scores, self.digit, self.done, self.cycles
+        ]
+
+    def elaborate(self, platform):
+        m = Module()
+        for j, engine in enumerate(self.engines):
+            m.submodules[f"layer_{j + 1}"] = engine
+        m.submodules.dense = dense = self.dense
+        first = self.engines[0] if self.engines else dense
+        for before, after in zip(self.engines, [*self.engines[1:], dense]):
+            m.d.comb += [after.x.eq(before.y), after.x_valid.eq(before.y_valid)]
+
+        # Pixels: from the first to the last of an image, then none until it is done.
+        pixel = Signal(range(784))
+        waiting = Signal()
+        taken = Signal()
+        open_ = ~waiting | self.done
+        m.d.comb += [
+            first.x.eq(self.x >> self.pixel_shift),
+            first.x_valid.eq(self.x_valid & open_),
+            self.x_ready.eq(first.x_ready & open_),
+            taken.eq(self.x_valid & self.x_ready),
+        ]
+        with m.If(taken):
+            with m.If(pixel == 783):
+                m.d.sync += [pixel.eq(0), waiting.eq(1)]
+            with m.Else():
+                m.d.sync += pixel.eq(pixel + 1)
+        with m.If(self.done):
+            m.d.sync += waiting.eq(0)
+
+        # The clocks from the first pixel taken to `done`, both counted.
+        counting = Signal()
+        with m.If(taken & (pixel == 0)):
+            m.d.sync += [self.cycles.eq(1), counting.eq(1)]
+        with m.Elif(counting):
+            with m.If(self.done):
+                m.d.sync += counting.eq(0)
+            with m.Else():
+                m.d.sync += self.cycles.eq(self.cycles + 1)
         return m
 
 

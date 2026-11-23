@@ -404,6 +404,59 @@ mod tests {
         assert_eq!(conv.inputs.len(), 25);
     }
 
+    /// The argmax picks the highest score, and the first of the highest when two or more tie, as
+    /// the FPGA's does.
+    #[test]
+    fn argmax_picks_the_first_of_the_highest() {
+        assert_eq!(integer::argmax(&[3, 9, -1, 4]), 1);
+        assert_eq!(integer::argmax(&[3, 9, -1, 9]), 1);
+        assert_eq!(integer::argmax(&[5, 5, 5]), 0);
+        assert_eq!(integer::argmax(&[i32::MIN, i32::MIN, i32::MAX]), 2);
+    }
+
+    /// The output layer's and the whole network's test vectors: each input's scores and digit are
+    /// the golden model's, and the made-up output layer's scores reach both ends of an int32 and
+    /// tie, the first of the highest picked over a later one.
+    #[test]
+    fn output_and_network_vectors_are_what_the_golden_model_computes() {
+        let net = r16_integer();
+        let v = vectors::vectors(&net).unwrap();
+        let names: Vec<&str> = v.dense_cases.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["r16-output", "dense-extremes"]);
+        for case in &v.dense_cases {
+            let layer = case.layer.as_ref().unwrap_or(&net.output);
+            assert_eq!(case.inputs.len(), case.scores.len(), "{}", case.name);
+            for ((x, scores), &digit) in case.inputs.iter().zip(&case.scores).zip(&case.digits) {
+                assert_eq!(&layer.scores(x).unwrap(), scores, "{}", case.name);
+                assert_eq!(digit, integer::argmax(scores), "{}", case.name);
+            }
+        }
+        let extremes = &v.dense_cases[1];
+        let all: Vec<i32> = extremes.scores.iter().flatten().copied().collect();
+        assert!(all.contains(&i32::MIN) && all.contains(&i32::MAX));
+        let tied_low = extremes.scores.iter().zip(&extremes.digits).any(|(s, &d)| {
+            let highest = s[d];
+            s.iter().skip(d + 1).any(|&t| t == highest)
+        });
+        assert!(
+            tied_low,
+            "no input ties a later output with the digit picked"
+        );
+        let r16 = &v.network_cases[0];
+        assert_eq!((r16.name.as_str(), r16.images.len()), ("r16", 6));
+        for ((image, scores), &digit) in r16.images.iter().zip(&r16.scores).zip(&r16.digits) {
+            assert_eq!(&net.scores(image).unwrap().0, scores);
+            assert_eq!(digit, integer::argmax(scores));
+        }
+        let digits: std::collections::BTreeSet<usize> = v
+            .dense_cases
+            .iter()
+            .flat_map(|c| c.digits.clone())
+            .chain(r16.digits.clone())
+            .collect();
+        assert!(digits.len() >= 3, "the cases pick only digits {digits:?}");
+    }
+
     /// `int8` takes the finest power-of-two grid that holds the largest magnitude in 127 steps,
     /// and rounds each value to the nearest step, a half away from zero.
     #[test]

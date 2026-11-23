@@ -201,9 +201,11 @@ person's approval in the session, and every load is logged as a `firmware.flash`
 |---|---|---|
 | training and the rank sweep | Python, PyTorch: the exception CLAUDE.md names for it | `models/littlebit/` |
 | the weight export and the integer golden model | Rust | `crates/littlebit` |
-| the layer engines, the weight-ROM generator, the UART, the top level | Amaranth | `gateware/littlebit/` |
-| tests of the gateware | cocotb on Verilator, run by pytest | `gateware/littlebit/tests/`, as the UART's are in `gateware/cores/tests/` |
-| the host: sends images, compares answers, logs, writes the record | Rust, a `tentzhen` command | `crates/tentzhen` |
+| the layer engine, the output layer, the weight-ROM generator, the whole network | Amaranth | `gateware/cores/littlebit.py` |
+| the UART | Amaranth | `gateware/cores/uart.py` |
+| the top level: the network behind the UART | Amaranth | `gateware/littlebit/network.py` |
+| tests of the gateware | cocotb on Verilator, run by pytest | `gateware/cores/tests/` and `gateware/littlebit/tests/` |
+| the host: sends inputs, compares answers | Rust, `tentzhen-littlebit`'s commands | `crates/littlebit` |
 
 Each directory is made when its first real file arrives (`roadmap.md`, Phase 0).
 
@@ -391,7 +393,10 @@ flowchart LR
 ```
 
 Layers 1 and 2 each get a LittleBit engine of their own, so they run as a pipeline. The output layer
-uses 10 multipliers at once, one per digit. One engine:
+uses 10 multipliers at once, one per digit: each input, one a clock, is multiplied by its column of
+the weights and added into 10 accumulators that start from the biases. Then the argmax reads the
+10 scores one a clock and keeps the first of the highest, as the golden model does
+(`DenseEngine` and `LittleBitNetwork` in `gateware/cores/littlebit.py`). One engine:
 
 ```mermaid
 flowchart LR
@@ -422,11 +427,19 @@ nextpnr's first routes of the two layers reached 40.72 and 44.80 MHz, short of 5
 **Clocks per image.** The engine takes in + r + out + 1 clocks a vector, and its last output comes
 2 clocks after that. With inputs back to back, that is `tested`: 1,057 clocks for r16's layer 1
 and 401 for its layer 2 (`littlebit_engine_computes_r16_layer_1_as_the_golden_model_does`,
-`littlebit_engine_computes_r16_layer_2_as_the_golden_model_does`). With the output layer's 128,
-the layers take 1,554 + 2r clocks one after another, 1,586 at r = 16, 31.7 µs at 50 MHz. The top
-level may overlap them, since layer 1 hands out an output a clock, as layer 2 takes its inputs. The
-spec estimated 1,550 + 4r. The on-chip cycle counter gives the real figure, `unknown` until it
-does.
+`littlebit_engine_computes_r16_layer_2_as_the_golden_model_does`). Run one after another, the
+three layers would take 1,554 + 2r clocks. The network overlaps them instead. Each engine hands
+its outputs to the next as it makes them, one a clock, and the next takes them as they come:
+
+- Layer 2 takes its first input 784 + 1 + r + 3 clocks after layer 1 takes the first pixel.
+- The output layer takes its first input 256 + 1 + r + 3 clocks after that.
+- It then takes its 128 inputs, adds the last a clock later, and runs the argmax in 10.
+
+That makes 1,187 + 2r clocks from the first pixel to the digit: 1,219 at r = 16, 24.4 µs at
+50 MHz. It is `tested` as both the design's cycle counter and the test count it
+(`littlebit_network_scores_r16s_test_vectors_as_the_golden_model_does`). The spec estimated
+1,550 + 4r. On the board the counter reports it with each answer, `measured` once the network
+runs there.
 
 **The serial link sets the pace.** At 115,200 baud and 10 bits a byte (8N1, assumed), the 785-byte
 request takes 68.1 ms and the 46-byte reply 4.0 ms: at most 13.9 images a second, however fast the
@@ -443,8 +456,15 @@ does not have yet.
 
 | direction | bytes | contents |
 |---|---|---|
-| computer → FPGA | 1 + 784 | header 0xA5, then 784 uint8 pixels |
-| FPGA → computer | 1 + 40 + 1 + 4 | header 0x5A, 10 int32 scores (little-endian), the argmax digit, the cycle count (uint32) |
+| computer → FPGA | 1 + 784 | header 0xA5, then 784 uint8 pixels as MNIST stores them; the FPGA shifts them |
+| FPGA → computer | 1 + 40 + 1 + 4 | header 0x5A, 10 int32 scores (little-endian), the argmax digit, the cycle count (uint32, little-endian) |
+
+The top level, `gateware/littlebit/network.py`, keeps a frame's pixels in a FIFO until the last one
+arrives. Then it feeds them to the network back to back, so the cycle count covers the network
+alone, not the serial link. A frame left part way is dropped after 100 ms of silence, as the one
+layer's was. In cocotb, without the PLL and at a UART divisor of 8, it answers two frames as the
+golden model does, each in 1,219 clocks, and drops a part one
+(`gateware/littlebit/tests/test_network_over_uart.py`).
 
 **Variant A and Variant B in Amaranth**
 
@@ -472,6 +492,21 @@ the engines alone, with no UART, output layer or top level. Together they take 1
 30,000 cells Gate 2 allows. The spec estimated layer 1's U-stage accumulators at a few thousand
 LUTs, and the hardwired ROMs at about 1,000–1,500.
 
+**What the whole network costs.** The board's design: r16's two engines, its output layer, the
+argmax, the cycle counter, the pixel FIFO, the UART, the blinky and the PLL
+(`python -m gateware.littlebit.network <build-dir>`, OSS CAD Suite 2026-11-21, 2026-11-23).
+nextpnr reports:
+
+| r16, the board's design | logic cells (TRELLIS_COMB) | flip-flops | 18 × 18 multipliers | block RAM | Fmax after routing |
+|---|---|---|---|---|---|
+| `littlebit_network` | 12,640 | 3,050 | 20 | 1 DP16KD | 55.63 MHz |
+
+That is within Gate 2's 30,000 at 50 MHz, `trusted` with the toolchain (`fpga-toolchain`). The one
+DP16KD is the pixel FIFO. The Yosys log maps one memory to block RAM,
+`littlebit_network.network.pixels.storage`, so the weights stay logic. The bitstream's sha256 is
+754c51aef2aabe3598296aacbada86a962afd274002b39c0ab929c387d52047b. It hasn't been loaded: the
+network's first board run waits for Gate 2.
+
 ## Verification
 
 Every stage must match the integer golden model bit for bit; accuracy is compared only at the step
@@ -489,6 +524,13 @@ model's 9,713, not fewer, and the two pick the same digit on 9,980 of the images
 images the integer model gets 58,809 right, against the float model's 58,798. Both are `tested`, by
 `r16_integer_is_within_half_a_point_of_float` and
 `r16_integer_saturates_no_latent_on_the_training_images`. So 8-bit scales were enough at this rank.
+
+**Check 2 passes at r = 16** (2026-11-23). On Verilator, the network's gateware (`LittleBitNetwork`)
+scored all 10,000 MNIST test images exactly as the golden model does: every one of the 10 scores,
+and the digit. Each image took 1,219 clocks. That is `tested`, by
+`littlebit_network_scores_mnist_test_images_as_the_golden_model_does`, which the Quality Gate runs
+on every commit. In the gate it takes 356 s of real time for the 10,000 images. With nextpnr's
+12,640 logic cells at 55.63 MHz (What the whole network costs), Gate 2 passes.
 
 What each figure of a run rests on: its accuracy is computed on the host, so `tested` at best; its
 LUTs, EBR blocks and Fmax are nextpnr's, `trusted` with the toolchain (`trusted-base.toml`,
@@ -528,7 +570,17 @@ inside the bitstream.
   gaps between inputs. Every output's y and z must be the golden model's, and every case
   saturates some latents and clamps some outputs at each end. The engine takes the windows as the
   golden model builds them; gateware that builds them from a grid is not written yet.
-- A full-network test: 100 images on every commit, all 10,000 before any board run.
+- An output-layer test: r16's output layer alone against the golden model, given all zeros, all
+  255 and 4 random inputs. A made-up layer from 4 inputs to 5 is tested too: its scores reach both
+  ends of an int32, and some tie, so the argmax must pick the first of the highest
+  (`gateware/cores/tests/test_littlebit_network.py`).
+- A full-network test: r16 against the golden model, every score and the digit of each image, on
+  its test vectors and on all 10,000 MNIST test images, in the same file. The plan asked for 100
+  images on every commit and all 10,000 before any board run. The gate runs all 10,000 on every
+  commit. MNIST is never committed, so the golden model scores the images as the test runs, into
+  the test's own temporary folder (`cargo run -p tentzhen-littlebit -- mnist-vectors <count>
+  <file>`). A top-level test sends r16 frames over the UART
+  (`gateware/littlebit/tests/test_network_over_uart.py`).
 - Waveforms (FST) kept only for failing tests.
 
 **On the board:** the host command sends each image, reads back the 10 scores and the argmax, and
@@ -565,7 +617,8 @@ Phase 0 may run beside Phase 1: it needs only the board and the toolchain.
    30,000 LUTs at 50 MHz in nextpnr's report. The network's first board run waits for this gate.
    Two smaller board runs come before it, by Jon's choice (2026-11-22). The first is the PLL at
    50 MHz, done (The board). The second is one layer from the engine, checked against the golden
-   model: r16's first layer, done (The board, "One layer on the board").
+   model: r16's first layer, done (The board, "One layer on the board"). Gate 2 passed at r = 16
+   on 2026-11-23 (Verification, "Check 2 passes at r = 16").
 4. **Phase 3, on the board.** Load E6 (r = 16, Variant A), run the host command, read the cycle
    counts. **Gate 3:** check 3, 1,000 images identical to the golden model.
 5. **Phase 4, experiments and write-up.** Run E1–E12, fill the results table, plot accuracy vs.
@@ -610,11 +663,16 @@ Gate 0's echo goes through the same DAPLink serial port as the bench's Phase 1 "
   2026-11-23): `measured`, `2026-11-23-i9-pll-echo`.
 - [x] Write the layer engine and the weight-ROM generator, and test them against the golden model in
   cocotb, a small convolution among the tests (`gateware/cores/littlebit.py`, 2026-11-23):
-  `tested` by the layer tests above. Next for Gate 2: the output layer, the top level and the
-  full-network test.
+  `tested` by the layer tests above.
 - [x] Run one layer from the engine on the board, ahead of Gate 2
   (`gateware/bringup/littlebit_layer.py`, 2026-11-23): r16's first layer answered 1,000 MNIST test
   images exactly as the golden model, `measured`, `2026-11-23-i9-littlebit-layer`.
+- [x] Write the output layer, the whole network, its top level over the UART and the full-network
+  test, then pass Gate 2 (`gateware/cores/littlebit.py`, `gateware/littlebit/network.py`,
+  2026-11-23). The network scored all 10,000 test images exactly as the golden model, `tested` by
+  `littlebit_network_scores_mnist_test_images_as_the_golden_model_does`. nextpnr reports 12,640
+  logic cells at 55.63 MHz. Next, Phase 3: the host command for the network's frames, then its
+  first board run.
 
 ## Experiments
 
@@ -629,7 +687,7 @@ Each cell fills as its run finishes, from the run's record or test.
 | E3 | binary dense, one scale per output | computer only | about 1.0 | | | | | | planned |
 | E4 | LittleBit r = 4 | A, hardwired | 0.062 | | | | | | planned |
 | E5 | LittleBit r = 8 | A, hardwired | 0.083 | | | | | | planned |
-| E6 | LittleBit r = 16 | A, hardwired | 0.125 | 97.17 (float 97.13) | | | | | integer model done |
+| E6 | LittleBit r = 16 | A, hardwired | 0.125 | 97.17 (float 97.13) | 12,640 | 1 (the pixel FIFO) | 55.63 | | Gate 2 passed |
 | E7 | LittleBit r = 32 | A, hardwired | 0.209 | | | | | | planned |
 | E8 | LittleBit r = 64 | A, hardwired | 0.376 | | | | | | planned |
 | E9 | LittleBit r = 16 | B, block RAM | 0.125 | | | | | | planned |
