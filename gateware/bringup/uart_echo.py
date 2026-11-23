@@ -25,13 +25,17 @@ BAUD = 115_200
 
 
 class UARTEcho(Elaboratable):
-    """Sends back every byte it receives, and blinks the LED."""
+    """Sends back every byte it receives, and blinks the LED, from a clock at `clock_hz`: the 25 MHz
+    oscillator's, unless it is told otherwise."""
+
+    def __init__(self, clock_hz=CLOCK_HZ):
+        self.clock_hz = clock_hz
 
     def elaborate(self, platform):
         m = Module()
         uart = platform.request("uart", 0)
-        divisor = round(CLOCK_HZ / BAUD)
-        m.submodules.blinky = Blinky()
+        divisor = round(self.clock_hz / BAUD)
+        m.submodules.blinky = Blinky(self.clock_hz)
         m.submodules.rx = rx = UARTRx(divisor)
         m.submodules.tx = tx = UARTTx(divisor)
         m.submodules.fifo = fifo = SyncFIFO(width=8, depth=16)
