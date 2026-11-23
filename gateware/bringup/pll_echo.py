@@ -26,17 +26,48 @@ from gateware.cores.ecp5_pll import PLL
 
 CLOCK_HZ = 50_000_000
 
+# What `ecppll -i 25 -o <MHz>` writes (ecppll 1.4-88-g2d12005, OSS CAD Suite 2026-11-21) for each
+# whole number of hertz from 50 to 80 MHz that the PLL can make from the 25 MHz oscillator: the
+# CLKI, CLKFB and CLKOP dividers, and CLKOP's coarse phase. 50 MHz is the board's clock. The rest
+# are for E12, the clock push (docs/littlebit.md, "E12, the highest clock that closes"), and no
+# board has run them.
+ECPPLL = {
+    50_000_000: (1, 2, 12, 5),
+    53_125_000: (8, 17, 11, 5),
+    55_000_000: (5, 11, 11, 5),
+    56_250_000: (4, 9, 11, 5),
+    59_375_000: (8, 19, 10, 4),
+    60_000_000: (5, 12, 10, 4),
+    62_500_000: (2, 5, 10, 4),
+    65_000_000: (5, 13, 9, 4),
+    65_625_000: (8, 21, 9, 4),
+    68_750_000: (4, 11, 9, 4),
+    70_000_000: (5, 14, 9, 4),
+    71_875_000: (8, 23, 8, 3),
+    75_000_000: (1, 3, 8, 4),
+    78_125_000: (8, 25, 8, 4),
+    80_000_000: (5, 16, 7, 3),
+}
+
+
+def clock(m, platform, hz):
+    """Gives module `m` the `sync` domain at `hz`, from the PLL fed by the board's 25 MHz
+    oscillator, with the dividers ecppll gave for `hz`."""
+    m.domains.sync = ClockDomain("sync")
+    clk25 = platform.request(platform.default_clk, 0)
+    f_in = int(platform.default_clk_frequency)
+    clki_div, clkfb_div, clkop_div, clkop_cphase = ECPPLL[hz]
+    m.submodules.pll = pll = PLL(
+        clk25.i, f_in, clki_div=clki_div, clkfb_div=clkfb_div, clkop_div=clkop_div,
+        clkop_cphase=clkop_cphase,
+    )
+    assert pll.f_out_hz == hz, f"the PLL gives {pll.f_out_hz} Hz, not {hz}"
+
 
 def clock_50_mhz(m, platform):
     """Gives module `m` the `sync` domain at 50 MHz, from the PLL fed by the board's 25 MHz
     oscillator, as this design runs it."""
-    m.domains.sync = ClockDomain("sync")
-    clk25 = platform.request(platform.default_clk, 0)
-    f_in = int(platform.default_clk_frequency)
-    m.submodules.pll = pll = PLL(
-        clk25.i, f_in, clki_div=1, clkfb_div=2, clkop_div=12, clkop_cphase=5
-    )
-    assert pll.f_out_hz == CLOCK_HZ, f"the PLL gives {pll.f_out_hz} Hz, not {CLOCK_HZ}"
+    clock(m, platform, CLOCK_HZ)
 
 
 class PLLEcho(Elaboratable):
