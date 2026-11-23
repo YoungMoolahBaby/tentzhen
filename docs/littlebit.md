@@ -733,6 +733,47 @@ Two builds came before this one:
   57.48 MHz. E9 marks every table for block RAM, so that all the weights are stored, as Variant B
   is defined.
 
+**E12, the highest clock that closes** (2026-11-23). E12 is E6, r16 in Variant A, at a clock
+above 50 MHz. "Closes" means what "fits" meant for E11: the whole board design places, routes and
+meets its clock in nextpnr, at its default seed. The PLL makes only some clocks from the 25 MHz
+oscillator: 25 MHz × CLKFB / CLKI, with the PFD and VCO in range. From 50 to 80 MHz, it makes 15
+whole numbers of hertz, rising from 50 in steps of 3.125 MHz or less. ecppll's dividers for each
+are in `gateware/bringup/pll_echo.py` (`ECPPLL`), and each gives its clock exactly
+(`test_each_clock_s_ecppll_dividers_give_it`). How to search was fixed before the first build:
+build at each clock, rising from 53.125 MHz, and stop after two misses in a row. E12 is the
+highest that closed. Each was built with `--clock-mhz` (OSS CAD Suite 2026-11-21), and nextpnr
+took the PLL's clock as its target ("Derived frequency constraint", in its log):
+
+| clock | logic cells (TRELLIS_COMB) | flip-flops | Fmax after routing | |
+|---|---|---|---|---|
+| 53.125 MHz | 12,635 | 3,050 | 57.96 MHz | closes |
+| 55 MHz | 12,648 | 3,050 | 58.35 MHz | closes |
+| 56.25 MHz | 12,646 | 3,050 | 58.21 MHz | closes |
+| 59.375 MHz | 12,632 | 3,052 | 59.78 MHz | **closes: E12** |
+| 60 MHz | 12,703 | 3,052 | 52.93 MHz | misses |
+| 62.5 MHz | 12,629 | 3,052 | 55.25 MHz | misses |
+
+Each took 20 of the multipliers and 1 DP16KD, the pixel FIFO, and each routed. E12's bitstream is
+`13ee59f5…`, and a second build gave it byte for byte. At 50 MHz the design is still E6's: its
+RTLIL is the same as before but for its notes of source lines. The build figures are nextpnr's,
+`trusted` (`fpga-toolchain`). No board has run E12, or any clock but 50 MHz.
+
+What it shows:
+
+- **r16 closes at 59.375 MHz in nextpnr, 18.75 % past 50.** At 1,219 clocks an image, that is
+  20.5 µs an image, or 48,708 images a second if nothing else held it back, against 41,017 at
+  50 MHz. On the board the serial link holds it to 13.9 images a second at either clock ("The
+  serial link sets the pace", above).
+- **E6's 55.63 MHz is not the most r16 reaches.** Built for 50 MHz, it reached 55.63; built for
+  59.375, the same design reached 59.78. Why a higher target gave a faster route is `unknown`
+  until nextpnr's source is read.
+- **The edge is not sharp.** 59.375 MHz closes and 60 misses, 0.625 MHz apart, and 60's route was
+  the slowest of the six, at 52.93. Each figure is one route at one seed. Whether 60 MHz or more
+  would close at another seed is `unknown`, and nothing above 62.5 MHz was built.
+- **Whether the board keeps up is `unknown`.** nextpnr's timing is the toolchain's model of the
+  chip. The PLL is `measured` only at 50 MHz (`2026-11-23-i9-pll-echo`). A board run at
+  59.375 MHz, scored against the golden model as check 3 was, would make E12 `measured`.
+
 ## Verification
 
 Every stage must match the integer golden model bit for bit; accuracy is compared only at the step
@@ -941,8 +982,10 @@ Gate 0's echo goes through the same DAPLink serial port as the bench's Phase 1 "
 - [x] Write Variant B, the tables in block RAM, and build r16 in it, E9
   (`gateware/cores/littlebit.py`, 2026-11-23): 7,400 logic cells and 14 DP16KD at 54.35 MHz in
   nextpnr, against Variant A's 12,640 cells at 55.63 MHz, in the same 1,219 clocks an image
-  (Hardware architecture, "E9, the weights in block RAM"). Next: E10, the wider network, and E12,
-  the clock push.
+  (Hardware architecture, "E9, the weights in block RAM").
+- [x] Push r16's clock, E12, through the clocks the PLL makes from 25 MHz (2026-11-23): it closes
+  at 59.375 MHz in nextpnr, and misses at 60 and 62.5 (Hardware architecture, "E12, the highest
+  clock that closes"). Next: E10, the wider network, then the two plots.
 
 ## Experiments
 
@@ -963,7 +1006,7 @@ Each cell fills as its run finishes, from the run's record or test.
 | E9 | LittleBit r = 16 | B, block RAM | 0.125 | 97.17 (float 97.13): E6's integer network | 7,400 | 14 (13 for the weights, 1 the pixel FIFO) | 54.35 | 1,219 clocks each, 41,017 at 50 MHz | built; not run on the board |
 | E10 | the same weight bits as E7, wider: 784 → 1024 → 512 → 10 | A, hardwired | set to match E7 | | | | | | planned |
 | E11 | LittleBit r = 42, the largest fit: r raised until place-and-route or 50 MHz fails | A, hardwired | 0.261 | 97.95 (float 97.96) | 24,934 | 1 (the pixel FIFO) | 50.29 | 1,271 clocks each, 39,339 at 50 MHz | built; not run on the board |
-| E12 | clock push: E6, LittleBit r = 16, at the highest clock that passes | A, hardwired | 0.125 | | | | | | planned |
+| E12 | clock push: E6, LittleBit r = 16, at the highest clock that passes, 59.375 MHz | A, hardwired | 0.125 | 97.17 (float 97.13) | 12,632 | 1 (the pixel FIFO) | 59.78, clocked at 59.375 | 1,219 clocks each, 48,708 at 59.375 MHz | built; not run on the board |
 
 A dash marks a figure that a computer-only run doesn't have. E3's 1.010 bits a weight are its
 signs and one 8-bit scale per output, (784 × 256 + 8 × 256) / (784 × 256). Like the LittleBit

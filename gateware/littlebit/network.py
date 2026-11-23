@@ -2,7 +2,8 @@
 architecture"): r16, or another run's integer network, its integers hardwired into logic
 (Variant A) or kept in block RAM (Variant B), run by `LittleBitNetwork`
 (gateware/cores/littlebit.py) at 50 MHz from the PLL, fed and read over the UART at 115,200 baud.
-The LED blinks as the blinky's does, at 50 MHz.
+The LED blinks as the blinky's does, at 50 MHz. E12, the clock push, builds it at the PLL's other
+clocks.
 
 The computer sends a frame: the byte 0xA5, then an image's 784 pixels, one byte each, as MNIST
 stores them; the network shifts them itself. The design answers 0x5A; the 10 scores, each an
@@ -23,15 +24,20 @@ This builds the bitstream and nothing more. Loading it is a flash, which a perso
 session and the lab log records (lab/targets.toml), done by hand with openFPGALoader. From the
 repo root:
 
-    python -m gateware.littlebit.network [--variant B] <build-dir> [<integer.json>]
+    python -m gateware.littlebit.network [--variant B] [--clock-mhz <MHz>] <build-dir> \
+        [<integer.json>]
 
 The network is r16's, models/littlebit/runs/r16/integer.json, unless another run's file is named:
 the rank sweep's are built the same way, for their LUTs, block RAM and clock (docs/littlebit.md,
-"Experiments"). It is Variant A unless `--variant B` is given.
+"Experiments"). It is Variant A unless `--variant B` is given, and runs at 50 MHz unless
+`--clock-mhz` names another of the clocks the PLL makes (`ECPPLL` in
+gateware/bringup/pll_echo.py). The UART's divisor, the blinky's count and the 100 ms of silence
+that drop a frame follow from the clock.
 """
 
 import argparse
 import json
+from decimal import Decimal
 from pathlib import Path
 
 from amaranth import Cat, Const, Elaboratable, Module, ResetInserter, Signal
@@ -40,7 +46,7 @@ from amaranth.lib.fifo import SyncFIFOBuffered
 from gateware.boards.colorlight_i9 import ColorlightI9Platform
 from gateware.bringup.blinky import Blinky
 from gateware.bringup.littlebit_layer import ANSWER, FRAME
-from gateware.bringup.pll_echo import CLOCK_HZ, clock_50_mhz
+from gateware.bringup.pll_echo import CLOCK_HZ, ECPPLL, clock
 from gateware.bringup.uart_echo import BAUD
 from gateware.cores.littlebit import VARIANTS, LittleBitNetwork
 from gateware.cores.uart import UARTRx, UARTTx
@@ -140,18 +146,22 @@ class NetworkOverUART(Elaboratable):
 
 
 class NetworkBoard(Elaboratable):
-    """A network over the UART, at 50 MHz from the PLL: what the board runs. The network is the
-    integer.json at `path`, r16's unless another is given, in `variant`, "A" or "B"."""
+    """A network over the UART, at `clock_hz` from the PLL, 50 MHz unless told otherwise: what the
+    board runs. The network is the integer.json at `path`, r16's unless another is given, in
+    `variant`, "A" or "B"."""
 
-    def __init__(self, path=NETWORK, variant="A"):
+    def __init__(self, path=NETWORK, variant="A", clock_hz=CLOCK_HZ):
+        if clock_hz not in ECPPLL:
+            raise ValueError(f"the PLL has no dividers here for {clock_hz} Hz")
         self.path = path
         self.variant = variant
+        self.clock_hz = clock_hz
 
     def elaborate(self, platform):
         m = Module()
-        clock_50_mhz(m, platform)
+        clock(m, platform, self.clock_hz)
         network = read_network(self.path)
-        m.submodules.network = NetworkOverUART(network, CLOCK_HZ, variant=self.variant)
+        m.submodules.network = NetworkOverUART(network, self.clock_hz, variant=self.variant)
         return m
 
 
@@ -163,8 +173,10 @@ if __name__ == "__main__":
     parser.add_argument("build_dir", nargs="?", default="build")
     parser.add_argument("network", nargs="?", default=NETWORK, help="an integer.json; r16's if none")
     parser.add_argument("--variant", choices=VARIANTS, default="A")
+    parser.add_argument("--clock-mhz", choices=[f"{hz / 1e6:g}" for hz in ECPPLL], default="50")
     args = parser.parse_args()
+    clock_hz = int(Decimal(args.clock_mhz) * 1_000_000)
     ColorlightI9Platform().build(
-        NetworkBoard(args.network, args.variant), name="littlebit_network",
+        NetworkBoard(args.network, args.variant, clock_hz), name="littlebit_network",
         build_dir=args.build_dir,
     )

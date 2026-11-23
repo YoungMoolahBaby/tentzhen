@@ -12,7 +12,7 @@ import pytest
 from amaranth import Signal
 from amaranth.back import rtlil
 
-from gateware.bringup.pll_echo import CLOCK_HZ, PLLEcho
+from gateware.bringup.pll_echo import CLOCK_HZ, ECPPLL, PLLEcho
 from gateware.cores.ecp5_pll import PLL
 
 MHZ = 1_000_000
@@ -28,6 +28,15 @@ def test_ecppll_dividers_give_50_mhz_from_a_600_mhz_vco():
     """What `ecppll -i 25 -o 50` printed (ecppll 1.4-88-g2d12005): 50 MHz out, VCO 600 MHz."""
     p = pll()
     assert (p.f_out_hz, p.f_vco_hz) == (50 * MHZ, 600 * MHZ)
+
+
+@pytest.mark.parametrize("hz", ECPPLL)
+def test_each_clock_s_ecppll_dividers_give_it(hz):
+    """Each clock pll_echo.py has ecppll's dividers for comes out of them at exactly that many
+    hertz, with the PFD, VCO and dividers in the ranges ecppll uses, or `PLL` refuses them."""
+    clki_div, clkfb_div, clkop_div, clkop_cphase = ECPPLL[hz]
+    p = pll(clki_div=clki_div, clkfb_div=clkfb_div, clkop_div=clkop_div, clkop_cphase=clkop_cphase)
+    assert p.f_out_hz == hz
 
 
 @pytest.mark.parametrize(
