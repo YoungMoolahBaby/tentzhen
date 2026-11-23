@@ -2,10 +2,33 @@
 //! integer network to `<run-folder>/integer.json` (`tentzhen_littlebit::export`). It reads MNIST's
 //! training images from the folder MNIST_DIR names, checked against their pins, and then prints
 //! what the integer network gets right of the test images beside what the float run got.
+//!
+//! `cargo run -p tentzhen-littlebit -- vectors`, from the repo root, writes the gateware's test
+//! vectors (`tentzhen_littlebit::vectors`). They need no MNIST.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use tentzhen_littlebit::{export, mnist, run};
+use tentzhen_littlebit::{export, integer, mnist, run, vectors};
+
+fn write_vectors() -> Result<String, String> {
+    let text =
+        std::fs::read_to_string(vectors::R16).map_err(|e| format!("{}: {e}", vectors::R16))?;
+    let r16 = integer::Network::parse(&text)?;
+    let v = vectors::vectors(&r16)?;
+    std::fs::write(vectors::FILE, vectors::to_json(&v))
+        .map_err(|e| format!("{}: {e}", vectors::FILE))?;
+    let mut report = format!("wrote {}\n", vectors::FILE);
+    for case in &v.cases {
+        let saturated: usize = case.steps.iter().map(|s| s.saturated).sum();
+        report += &format!(
+            "  {}: {} inputs, {} latents saturated\n",
+            case.name,
+            case.inputs.len(),
+            saturated
+        );
+    }
+    Ok(report)
+}
 
 fn export(folder: &Path) -> Result<String, String> {
     let mnist_dir = std::env::var_os("MNIST_DIR")
@@ -42,7 +65,8 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.as_slice() {
         [command, folder] if command == "export" => export(Path::new(folder)),
-        _ => Err("usage: tentzhen-littlebit export <run-folder>".into()),
+        [command] if command == "vectors" => write_vectors(),
+        _ => Err("usage: tentzhen-littlebit export <run-folder> | vectors".into()),
     };
     match result {
         Ok(report) => {

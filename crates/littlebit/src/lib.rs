@@ -1,12 +1,14 @@
 //! Project #3's golden model (docs/littlebit.md, "Verification"): MNIST read only as its pins
 //! allow ([`mnist`]); a training run's committed weights, dense or LittleBit, re-scored here in f32
 //! ([`run`]); the exporter, which makes a LittleBit run an integer network ([`export`]); and the
-//! integer golden model that runs it ([`integer`]).
+//! integer golden model that runs it ([`integer`]); and the test vectors it writes for the
+//! gateware ([`vectors`]).
 
 pub mod export;
 pub mod integer;
 pub mod mnist;
 pub mod run;
+pub mod vectors;
 
 #[cfg(test)]
 mod tests {
@@ -302,6 +304,71 @@ mod tests {
         assert_eq!(t.t, [637, -32_768]);
         assert_eq!(t.saturated, 1);
         assert_eq!(t.y, [255, 0, 0]);
+    }
+
+    /// A 2 x 3 grid of 2 channels, worked by hand: each window is the 3 x 3 patch around its
+    /// position, row by row and then by channel, with zeros past the edge; and the windows come
+    /// in the grid's order.
+    #[test]
+    fn windows_take_each_position_s_patch_with_zeros_past_the_edge() {
+        // Position (row, column) holds channel 0 = 10 * row + column + 1, channel 1 = 100 + that.
+        let grid: Vec<u8> = (0..2)
+            .flat_map(|r| (0..3).flat_map(move |c| [10 * r + c + 1, 110 + 10 * r + c + 1]))
+            .collect();
+        let w = integer::windows(&grid, 2, 3, 2, 3).unwrap();
+        assert_eq!(w.len(), 6);
+        assert!(w.iter().all(|w| w.len() == 18));
+        // Position (0, 0): the patch's top row and left column are past the edge.
+        #[rustfmt::skip]
+        assert_eq!(w[0], [
+            0, 0,   0, 0,     0, 0,
+            0, 0,   1, 111,   2, 112,
+            0, 0,   11, 121,  12, 122,
+        ]);
+        // Position (1, 2): its bottom row and right column are.
+        #[rustfmt::skip]
+        assert_eq!(w[5], [
+            2, 112,   3, 113,   0, 0,
+            12, 122,  13, 123,  0, 0,
+            0, 0,     0, 0,     0, 0,
+        ]);
+        assert!(integer::windows(&grid, 3, 3, 2, 3).is_err());
+        assert!(integer::windows(&grid, 2, 3, 2, 2).is_err());
+    }
+
+    /// The gateware's test vectors are what the golden model writes, and load as their schema.
+    /// Each case exercises the engine's edges: some latent saturates, and some output clamps to
+    /// 0, some to 255, and some falls between.
+    #[test]
+    fn littlebit_vectors_are_what_the_golden_model_writes() {
+        let v = vectors::vectors(&r16_integer()).unwrap();
+        let committed = fs::read_to_string(root().join(vectors::FILE)).unwrap();
+        assert!(
+            committed == vectors::to_json(&v),
+            "{} is stale: run `cargo run -p tentzhen-littlebit -- vectors`",
+            vectors::FILE
+        );
+        let loaded: vectors::Vectors = serde_json::from_str(&committed).unwrap();
+        assert_eq!(loaded, v);
+        let names: Vec<&str> = v.cases.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["r16-layer-1", "r16-layer-2", "convolution-3x3"]);
+        for case in &v.cases {
+            assert_eq!(case.inputs.len(), case.steps.len(), "{}", case.name);
+            let saturated: usize = case.steps.iter().map(|s| s.saturated).sum();
+            let y: Vec<u8> = case.steps.iter().flat_map(|s| s.y.clone()).collect();
+            assert!(saturated > 0, "{}: no latent saturates", case.name);
+            assert!(
+                y.contains(&0) && y.contains(&255),
+                "{}: no clamp",
+                case.name
+            );
+            assert!(y.iter().any(|&y| 0 < y && y < 255), "{}", case.name);
+        }
+        let conv = &v.cases[2];
+        let c = conv.convolution.as_ref().unwrap();
+        let windows = integer::windows(&c.grid, c.height, c.width, c.channels, c.kernel).unwrap();
+        assert_eq!(conv.inputs, windows);
+        assert_eq!(conv.inputs.len(), 25);
     }
 
     /// `int8` takes the finest power-of-two grid that holds the largest magnitude in 127 steps,
