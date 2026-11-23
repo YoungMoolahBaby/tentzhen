@@ -12,8 +12,9 @@ Lattice's Clarity Designer):
 `PLL` refuses dividers or frequencies outside the ranges that file uses, in MHz: input 8 to 400,
 PFD 3.125 to 400, VCO 400 to 800, output 10 to 400; CLKI and CLKOP dividers 1 to 128, and CLKFB
 1 to 80. It also refuses an output that isn't a whole number of hertz, since a design counts its
-cycles from it. Both refusals are `tested`: tests/test_ecp5_pll.py. Whether a PLL so set locks,
-and runs at its f_out on the chip, is `unknown` until a board shows it.
+cycles from it. Both refusals are `tested`: tests/test_ecp5_pll.py. Set as pll_echo.py sets it, the
+PLL locks on the i9 and its domain runs near 50 MHz (measured:
+lab/records/2026-11-23-i9-pll-echo.toml). Other settings are `unknown` until a board runs them.
 
 `PLL` drives the domain's clock and reset; a module above it defines the domain, since Amaranth
 0.5.10 passes a domain down to submodules only, never up (`Fragment._propagate_domains`, in

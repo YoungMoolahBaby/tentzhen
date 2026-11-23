@@ -116,6 +116,26 @@ saw its green LED blink about once a second (seq 12). It wasn't blinking before 
 reported afterwards (seq 13). So the blink began with the load. Gate 0's blinky used a power
 cycle as its control; this one uses before and after. What i9-2's flash holds is `unknown`.
 
+**The PLL at 50 MHz.** Gate 0 ran at 25 MHz from the oscillator. The design will run at 50
+MHz from the ECP5's PLL (the table above). So before the layer engine, Gate 0's echo and blinky ran
+on i9-2 from the PLL at 50 MHz (`gateware/bringup/pll_echo.py`, 2026-11-23). The PLL's dividers are
+the ones Project Trellis's `ecppll -i 25 -o 50` gives: 25 MHz, times 2, from a 600 MHz VCO.
+
+| | the result | lab log, 2026-11-23 |
+|---|---|---|
+| before the load | the 25 MHz blinky, and no echo at 115,200 baud | seq 14, 15 |
+| after it, at 115,200 baud | all 282 bytes back, in order, twice | seq 17, 19 |
+| after it, at 57,600 baud, the rate it would echo at from 25 MHz | the first byte back already wrong | seq 18 |
+| the LED, by eye | about once a second, not once every 2 s | seq 20 |
+
+So the PLL locks, and the design runs near 50 MHz: `measured`, `2026-11-23-i9-pll-echo`. How near
+isn't measured. Echoing at 115,200 baud only shows the clock is close enough for the UART. nextpnr
+derives the 50 MHz constraint from the PLL's dividers by itself, and puts the routed design's limit
+at 155.50 MHz. That is its timing model's figure, not a measurement. That the PLL refuses dividers
+outside `ecppll`'s ranges is `tested` (`gateware/cores/tests/test_ecp5_pll.py`). So is the echo at
+50 MHz and its divisor, 434, in cocotb without the PLL, which Verilator has no model of
+(`uart_echo_at_50_mhz_sends_back_every_byte_at_115200_baud`).
+
 **Load with one board on USB.** openFPGALoader 1.2.0 can't choose between two identical CMSIS-DAP
 v1 probes:
 
@@ -130,7 +150,8 @@ openFPGALoader reports opening.
 
 The board uses:
 
-- **Clock:** 25 MHz on ball P3.
+- **Clock:** 25 MHz on ball P3. From it the ECP5's PLL, EHXPLLL, makes 50 MHz
+  (`gateware/cores/ecp5_pll.py`).
 - **LED:** ball L2, lit when driven low; the same ball is P2 pin 28.
 - **UART:** balls J17 (out of the FPGA) and H18 (in), wired to the extension board's DAPLink, which
   gives the computer a USB serial port (`builds/digitizer/v1.toml`, its header notes).
@@ -480,7 +501,10 @@ Phase 0 may run beside Phase 1: it needs only the board and the toolchain.
    run yet.
 3. **Phase 2, gateware and simulation.** The weight-ROM generator, the layer engine and the top
    level; cocotb on Verilator. **Gate 2:** check 2, bit-exact on all 10,000 test images, and at most
-   30,000 LUTs at 50 MHz in nextpnr's report. The first board run waits for this gate.
+   30,000 LUTs at 50 MHz in nextpnr's report. The network's first board run waits for this gate.
+   Two smaller board runs come before it, by Jon's choice (2026-11-22). The first is the PLL at
+   50 MHz, done (The board). The second is one layer from the engine, checked against the golden
+   model, done once the engine passes in simulation.
 4. **Phase 3, on the board.** Load E6 (r = 16, Variant A), run the host command, read the cycle
    counts. **Gate 3:** check 3, 1,000 images identical to the golden model.
 5. **Phase 4, experiments and write-up.** Run E1–E12, fill the results table, plot accuracy vs.
@@ -521,6 +545,11 @@ Gate 0's echo goes through the same DAPLink serial port as the bench's Phase 1 "
 - [x] Write the exporter and the integer golden model, then run check 1 at r = 16 (Gate 1)
   (`crates/littlebit`, 2026-11-22): 9,717 of the 10,000 test images, 97.17 %, against the float
   model's 97.13 %, `tested` by `r16_integer_is_within_half_a_point_of_float`.
+- [x] Run Gate 0's echo and blinky at 50 MHz from the PLL (`gateware/bringup/pll_echo.py`,
+  2026-11-23): `measured`, `2026-11-23-i9-pll-echo`.
+- [ ] Write the layer engine and the weight-ROM generator, and test them against the golden model in
+  cocotb, a small convolution among the tests.
+- [ ] Run one layer from the engine on the board, ahead of Gate 2.
 
 ## Experiments
 

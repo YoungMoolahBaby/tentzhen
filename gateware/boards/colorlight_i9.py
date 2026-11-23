@@ -39,7 +39,9 @@ class ColorlightI9Platform(LatticePlatform):
         # 11 with exit 0xC0000374, a heap corruption: both times it was asked for an SVF file too,
         # writing no bitstream, and without one in 4 of 7 runs from Amaranth's build script and 1
         # of 13 run by hand (2026-11-21 and 22). Each design's bitstreams that it did write had
-        # one sha256. openFPGALoader loads the .bit, so no SVF is asked for. When a build crashes,
+        # one sha256. On 2026-11-23 it crashed in 3 of 6 builds from the script, each after writing
+        # a .bit byte-identical to one measured before. openFPGALoader loads the .bit, so no SVF is
+        # asked for. When a build crashes with no .bit written,
         # `ecppack --input <name>.config --bit <name>.bit` run by hand in its folder finishes it.
         templates = super().command_templates
         if self.toolchain != "Trellis":

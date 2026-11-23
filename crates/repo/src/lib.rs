@@ -124,7 +124,7 @@ mod tests {
                 }
             }
         }
-        let cocotb = cocotb_tests();
+        let gateware = gateware_tests();
         let (mut tests, mut paths) = (0, 0);
         for (i, token) in now.split('`').enumerate() {
             if i % 2 == 0 {
@@ -137,7 +137,7 @@ mod tests {
             if is_name {
                 tests += 1;
                 assert!(
-                    source.contains(&format!("fn {token}()")) || cocotb.contains(token),
+                    source.contains(&format!("fn {token}()")) || gateware.contains(token),
                     "docs/architecture.md names the test {token}, which does not exist"
                 );
             } else if token.contains('<') {
@@ -718,11 +718,13 @@ mod tests {
         tests: BTreeMap<String, BTreeSet<String>>,
     }
 
-    /// The cocotb tests under gateware/: in each `test_*.py`, the functions marked
-    /// `@cocotb.test(...)`, through any other decorators between the mark and the `async def`.
-    /// The gateware's tests are cocotb, as CLAUDE.md's language policy has them, so a referent
-    /// names one as `gateware <name>` (docs/littlebit.md, "Grading a training run").
-    fn cocotb_tests() -> BTreeSet<String> {
+    /// The tests under gateware/: in each `test_*.py`, the cocotb tests, functions marked
+    /// `@cocotb.test(...)` through any other decorators between the mark and the `async def`; and
+    /// pytest's own, the top-level functions named `test_*`, which run the cocotb tests or check
+    /// the Python that builds the gateware. The gateware's tests are cocotb, as CLAUDE.md's
+    /// language policy has them, run by pytest, so a referent names one as `gateware <name>`
+    /// (docs/littlebit.md, "Grading a training run").
+    fn gateware_tests() -> BTreeSet<String> {
         let mut found = BTreeSet::new();
         let mut stack = vec![root().join("gateware")];
         while let Some(dir) = stack.pop() {
@@ -738,6 +740,9 @@ mod tests {
                 }
                 let mut pending = false;
                 for line in fs::read_to_string(&path).unwrap().lines() {
+                    if let Some(rest) = line.strip_prefix("def test_") {
+                        found.insert(format!("test_{}", rest.split('(').next().unwrap()));
+                    }
                     let line = line.trim();
                     if line.starts_with("@cocotb.test(") {
                         pending = true;
@@ -797,7 +802,7 @@ mod tests {
                 }
             }
         }
-        code.tests.insert("gateware".into(), cocotb_tests());
+        code.tests.insert("gateware".into(), gateware_tests());
         code
     }
 
@@ -987,6 +992,18 @@ mod tests {
             ),
             None
         );
+        // So is a pytest test there, and a helper that isn't a test is not one.
+        assert_eq!(
+            referent_problem(
+                "test",
+                "gateware test_pll_refuses_what_ecppll_would_not_use",
+                &code,
+                &kani
+            ),
+            None
+        );
+        assert!(!code.tests["gateware"].contains("echoes_every_byte"));
+        assert!(!code.tests["gateware"].contains("pll"));
         assert!(
             code.tests["gateware"].len() >= 5,
             "{:?}",

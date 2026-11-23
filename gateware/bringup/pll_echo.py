@@ -5,8 +5,9 @@ The PLL's dividers are what `ecppll -i 25 -o 50` gave (gateware/cores/ecp5_pll.p
 oscillator, divided by 1 and multiplied by 2, from a VCO at 600 MHz that CLKOP divides by 12. The
 echo's divisor is then round(50 MHz / 115,200) = 434, and the blinky counts 25,000,000 cycles a
 half second. Run from 25 MHz instead, the same design would blink once every two seconds and
-echo at 57,600 baud, not 115,200. Whether it runs at 50 MHz on the board is `unknown` until a
-person sees it there.
+echo at 57,600 baud, not 115,200. On i9-2 it echoes at 115,200 and not at 57,600, and blinks about
+once a second: the PLL locks and the design runs near 50 MHz (measured:
+lab/records/2026-11-23-i9-pll-echo.toml). How near is not measured.
 
 This builds the bitstream and nothing more. Loading it is a flash, which a person approves in the
 session and the lab log records (lab/targets.toml), done by hand with openFPGALoader. From the
