@@ -43,7 +43,9 @@ The rest of the sweep runs the same way, with only the rank changed: `4`, `8`, `
 write `runs/r4`, `runs/r8`, `runs/r32` and `runs/r64`. Each took about a minute, and two runs at
 each rank gave the same weights, byte for byte (2026-11-23). In float they got 8,802, 9,464,
 9,772 and 9,814 of the test images right, which `the_sweep_scores_what_its_summaries_say`
-re-scores. Each is exported as r16 is, below.
+re-scores. Each is exported as r16 is, below. E11's search for the largest rank that fits the
+board added `runs/r40`, `r42`, `r43`, `r44`, `r48` and `r56` the same way (`docs/littlebit.md`,
+"E11, the largest rank that fits").
 
 ## Running the baselines
 

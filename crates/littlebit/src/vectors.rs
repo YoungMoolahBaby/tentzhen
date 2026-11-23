@@ -26,12 +26,14 @@ pub const FILE: &str = "gateware/cores/tests/littlebit_vectors.json";
 pub const R16: &str = "models/littlebit/runs/r16/integer.json";
 
 /// Where the rank sweep's other integer networks are, relative to the repo root: r = 4, 8, 32 and
-/// 64, E4, E5, E7 and E8 (docs/littlebit.md, "Experiments"). Each has a whole-network case.
-pub const SWEEP: [&str; 4] = [
+/// 64, E4, E5, E7 and E8, then r = 42, E11, the largest that fit (docs/littlebit.md,
+/// "Experiments"). Each has a whole-network case.
+pub const SWEEP: [&str; 5] = [
     "models/littlebit/runs/r4/integer.json",
     "models/littlebit/runs/r8/integer.json",
     "models/littlebit/runs/r32/integer.json",
     "models/littlebit/runs/r64/integer.json",
+    "models/littlebit/runs/r42/integer.json",
 ];
 
 /// The integer networks at [`R16`] and at each of [`SWEEP`], in its order, read from under the

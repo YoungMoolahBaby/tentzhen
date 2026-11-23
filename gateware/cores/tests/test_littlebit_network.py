@@ -2,7 +2,7 @@
 network, `LittleBitNetwork`, on Verilator, run by pytest (docs/littlebit.md, "cocotb tests"),
 against the golden model: on the test vectors crates/littlebit/src/vectors.rs writes
 (littlebit_vectors.json), and on MNIST's test images, check 2 of Gate 2. The rank sweep's other
-networks, r4, r8, r32 and r64, are each given their test vectors too.
+networks, r4, r8, r32 and r64, and E11's r42, are each given their test vectors too.
 
 MNIST is never committed, so the golden model scores its images when the test runs: the pytest
 test runs `cargo run -p tentzhen-littlebit -- mnist-vectors`, which reads MNIST from the folder

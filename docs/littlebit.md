@@ -612,7 +612,8 @@ but r16's has been loaded onto a board. What they show:
   at 49.55. nextpnr stops with an error when a clock is missed. A bitstream packed from its
   output anyway is not one to load, and none is kept.
 - **So, for research question 4,** at r = 64 timing runs out before the chip's logic does, and
-  routing completes. The largest rank that fits, E11, lies between 32 and 64.
+  routing completes. The largest rank that fits, E11, is r = 42 ("E11, the largest rank that
+  fits", below).
 - **Two ranks only just close.** r = 8 reaches 50.06 MHz and r = 32 reaches 50.43, slower than
   r = 4 and r = 16. Why is `unknown`. nextpnr's placement is a seeded search, and each build ran
   at its default seed.
@@ -623,6 +624,56 @@ golden model does, in 1,187 + 2r clocks, which is 1,195, 1,203, 1,251 and 1,315
 (`littlebit_network_scores_the_sweep_s_test_vectors_as_the_golden_model_does`). That test runs
 r16's six images through each network. Only r16 has run all 10,000 MNIST test images in cocotb
 (check 2) and 1,000 on the board (check 3).
+
+**E11, the largest rank that fits** (2026-11-23). "Fits" means the whole board design places,
+routes and closes at 50 MHz in nextpnr, at its default seed, as the experiments table has it.
+How to search was fixed before the first build:
+
+1. Raise r from 32, which fit, in steps of 8, to the first rank that doesn't.
+2. Then bisect between the last that fit and the first that didn't, down to a step of 1.
+3. Train each rank tried as the sweep's were, export it, check it, and build it once.
+
+r = 56 was built alongside 40 and 48, before the bisection. It isn't part of the search, and
+its build didn't finish. nextpnr's router was still running 32 minutes in, and was stopped. For
+comparison, r = 64's whole build took 11 minutes alone, while r = 56 shared the computer with
+other builds for part of its time. Whether r = 56 routes at this seed is `unknown`. Its
+accuracy is in the sweep's tests: 9,794 test images right as integers, 9,795 in float.
+
+| r | test images right, integer (float) | logic cells | flip-flops | Fmax after routing | |
+|---|---|---|---|---|---|
+| 32 | 9,776 (9,772) | 20,172 | 4,973 | 50.43 MHz | fits (E7) |
+| 40 | 9,771 (9,771) | 23,915 | 5,936 | 51.34 MHz | fits |
+| 48 | 9,791 (9,792) | 27,266 | 6,895 | 49.11 MHz | misses 50 MHz |
+| 44 | 9,803 (9,803) | 25,429 | 6,417 | 47.35 MHz | misses |
+| 42 | 9,795 (9,796) | 24,934 | 6,174 | 50.29 MHz | **fits: E11** |
+| 43 | 9,805 (9,802) | 25,326 | 6,296 | 49.68 MHz | misses |
+
+The rows are in the order the search built them. Each design took 20 of the 18 × 18 multipliers
+and 1 DP16KD, the pixel FIFO, and each routed. So E11 is r = 42: the largest rank this search
+found that fits, with r = 43 the smallest that doesn't. r = 42's bitstream is `e55ea4b7…`, and
+no board has run it. The test counts are `tested`, by the sweep's tests above, which take in
+every rank committed here. The build figures are nextpnr's, `trusted` (`fpga-toolchain`).
+
+What it answers:
+
+- **Research question 4, what runs out first: timing.** At r = 42, 24,934 cells are 57 % of the
+  chip, within Gate 2's 30,000 budget. Every design the search built routed, and so did
+  r = 64's. The 50 MHz clock is what stops the rank rising.
+- **How many binary weights fit:** at r = 42 the two hidden layers hold 42 × (784 + 256) +
+  42 × (256 + 128) = 59,808 sign bits. They stand for the hidden layers' 233,472 weights, at 0.261
+  total bits a weight in layer 1.
+- **The boundary is not sharp.** Fmax doesn't fall steadily with r: r = 40 closes at 51.34 MHz,
+  r = 44 misses at 47.35, and r = 8 and r = 32 only just close. Each figure is one route at one
+  seed, so another seed could move the line by a rank or more. Whether a rank above 42 would
+  close at another seed is `unknown`. E12, the clock push, is the experiment that varies the
+  clock.
+- **Accuracy has flattened by here.** From r = 40 to r = 48, the integer models get 9,771 to
+  9,805 test images right, against r = 64's 9,815 and E1's 9,831 in float.
+
+Like the sweep's, the search ranks are committed (`models/littlebit/runs/r40` to `r56`) and
+held by the same tests. r = 42 also has a network case in the test vectors, and cocotb runs it
+like the sweep's: 1,271 clocks an image
+(`littlebit_network_scores_the_sweep_s_test_vectors_as_the_golden_model_does`).
 
 ## Verification
 
@@ -821,8 +872,11 @@ Gate 0's echo goes through the same DAPLink serial port as the bench's Phase 1 "
   (`models/littlebit/train_rank.py` and `gateware/littlebit/network.py`, 2026-11-23). Check 1
   holds at every rank, `tested` by `the_sweep_s_integer_is_within_half_a_point_of_float`. r = 4
   falls to 87.91 % as integers. r = 64 misses both 50 MHz in nextpnr and Gate 2's cell budget
-  (Hardware architecture, "What each rank costs"). Next: E11, the largest rank that fits; then E9,
-  Variant B, and E10, E12.
+  (Hardware architecture, "What each rank costs").
+- [x] Find the largest rank that fits, E11, by raising r from 32 and then bisecting
+  (2026-11-23): r = 42 closes at 50.29 MHz in nextpnr, and r = 43 misses, at 49.68 (Hardware
+  architecture, "E11, the largest rank that fits"). Next: E9, Variant B; E10, the wider
+  network; and E12, the clock push.
 
 ## Experiments
 
@@ -842,7 +896,7 @@ Each cell fills as its run finishes, from the run's record or test.
 | E8 | LittleBit r = 64 | A, hardwired | 0.376 | 98.15 (float 98.14) | 35,139 | 1 (the pixel FIFO) | 49.55, short of 50 | 1,315 clocks each; 50 MHz not met | over the cell budget, and short of 50 MHz |
 | E9 | LittleBit r = 16 | B, block RAM | 0.125 | | | | | | planned |
 | E10 | the same weight bits as E7, wider: 784 → 1024 → 512 → 10 | A, hardwired | set to match E7 | | | | | | planned |
-| E11 | the largest fit: raise r until place-and-route or 50 MHz fails | A, hardwired | | | | | | | planned |
+| E11 | LittleBit r = 42, the largest fit: r raised until place-and-route or 50 MHz fails | A, hardwired | 0.261 | 97.95 (float 97.96) | 24,934 | 1 (the pixel FIFO) | 50.29 | 1,271 clocks each, 39,339 at 50 MHz | built; not run on the board |
 | E12 | clock push: E6, LittleBit r = 16, at the highest clock that passes | A, hardwired | 0.125 | | | | | | planned |
 
 A dash marks a figure that a computer-only run doesn't have. E3's 1.010 bits a weight are its

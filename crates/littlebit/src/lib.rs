@@ -684,13 +684,13 @@ mod tests {
     /// The output layer's and the whole networks' test vectors: each input's scores and digit are
     /// the golden model's, and the made-up output layer's scores reach both ends of an int32 and
     /// tie, the first of the highest picked over a later one. The sweep's networks, r4, r8, r32
-    /// and r64, each have a case on r16's images.
+    /// and r64 and E11's r42, each have a case on r16's images.
     #[test]
     fn output_and_network_vectors_are_what_the_golden_model_computes() {
         let (net, sweep) = vectors::networks(&root()).unwrap();
         let v = vectors::vectors(&net, &sweep).unwrap();
         let names: Vec<&str> = v.network_cases.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(names, ["r16", "r4", "r8", "r32", "r64"]);
+        assert_eq!(names, ["r16", "r4", "r8", "r32", "r64", "r42"]);
         for (case, other) in v.network_cases[1..].iter().zip(&sweep) {
             assert_eq!(case.images, v.network_cases[0].images, "{}", case.name);
             for ((image, scores), &digit) in case.images.iter().zip(&case.scores).zip(&case.digits)
@@ -838,8 +838,9 @@ mod tests {
         assert_eq!(same, 9_980);
     }
 
-    /// The rank sweep's other runs, E4, E5, E7 and E8 (docs/littlebit.md, "Experiments").
-    const SWEEP: [usize; 4] = [4, 8, 32, 64];
+    /// The rank sweep's other runs, E4, E5, E7 and E8, and the ranks E11's search tried: 40, 42,
+    /// 43, 44, 48 and 56 (docs/littlebit.md, "Experiments").
+    const SWEEP: [usize; 10] = [4, 8, 32, 40, 42, 43, 44, 48, 56, 64];
 
     fn rank(r: usize) -> PathBuf {
         root().join(format!("models/littlebit/runs/r{r}"))
@@ -894,8 +895,8 @@ mod tests {
     }
 
     /// Each of the sweep's runs, re-scored here from its committed weights in f32, gets right the
-    /// test and training images its summary says: 8,802 and 52,869 at r = 4, 9,464 and 57,036 at
-    /// r = 8, 9,772 and 59,602 at r = 32, and 9,814 and 59,887 at r = 64.
+    /// test and training images its summary says, as `want` lists them by rank: at r = 4, 8,802 and
+    /// 52,869; at r = 64, 9,814 and 59,887.
     #[test]
     fn the_sweep_scores_what_its_summaries_say() {
         let (train, test) = mnist::load(&root(), &mnist_dir()).unwrap();
@@ -919,6 +920,12 @@ mod tests {
             (4, 8_802, 52_869),
             (8, 9_464, 57_036),
             (32, 9_772, 59_602),
+            (40, 9_771, 59_695),
+            (42, 9_796, 59_742),
+            (43, 9_802, 59_749),
+            (44, 9_803, 59_747),
+            (48, 9_792, 59_793),
+            (56, 9_795, 59_847),
             (64, 9_814, 59_887),
         ];
         assert_eq!(got, want);
@@ -945,11 +952,9 @@ mod tests {
 
     /// Check 1 across the sweep: at each rank the integer golden model gets at most 0.5 points
     /// fewer of the 10,000 test images right than the float run, and on the training images, which
-    /// chose its latent shifts, it saturates no latent. The counts, at r = 4, 8, 32 and 64: integer
-    /// test 8,791, 9,463, 9,776 and 9,815, against float 8,802, 9,464, 9,772 and 9,814; the same
-    /// digit as float on 9,932, 9,974, 9,993 and 9,993 test images; integer training images right
-    /// 52,850, 57,018, 59,597 and 59,886; and one latent saturated on the test images at r = 4,
-    /// none at the others.
+    /// chose its latent shifts, it saturates no latent. `want` lists, by rank, the integer and float
+    /// test images right, the test images on which the two pick the same digit, the integer
+    /// training images right, and the latents saturated on the test images: one, at r = 4 only.
     #[test]
     fn the_sweep_s_integer_is_within_half_a_point_of_float() {
         let (train, test) = mnist::load(&root(), &mnist_dir()).unwrap();
@@ -978,6 +983,12 @@ mod tests {
             (4, 8_791, 8_802, 9_932, 52_850, 1),
             (8, 9_463, 9_464, 9_974, 57_018, 0),
             (32, 9_776, 9_772, 9_993, 59_597, 0),
+            (40, 9_771, 9_771, 9_993, 59_696, 0),
+            (42, 9_795, 9_796, 9_989, 59_735, 0),
+            (43, 9_805, 9_802, 9_991, 59_741, 0),
+            (44, 9_803, 9_803, 9_994, 59_751, 0),
+            (48, 9_791, 9_792, 9_991, 59_791, 0),
+            (56, 9_794, 9_795, 9_992, 59_852, 0),
             (64, 9_815, 9_814, 9_993, 59_886, 0),
         ];
         assert_eq!(got, want);
