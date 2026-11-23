@@ -1,7 +1,8 @@
 """The whole network on the board, Gate 2's top level (docs/littlebit.md, "Hardware
 architecture"): r16, or another run's integer network, its integers hardwired into logic
-(Variant A), run by `LittleBitNetwork` (gateware/cores/littlebit.py) at 50 MHz from the PLL, fed
-and read over the UART at 115,200 baud. The LED blinks as the blinky's does, at 50 MHz.
+(Variant A) or kept in block RAM (Variant B), run by `LittleBitNetwork`
+(gateware/cores/littlebit.py) at 50 MHz from the PLL, fed and read over the UART at 115,200 baud.
+The LED blinks as the blinky's does, at 50 MHz.
 
 The computer sends a frame: the byte 0xA5, then an image's 784 pixels, one byte each, as MNIST
 stores them; the network shifts them itself. The design answers 0x5A; the 10 scores, each an
@@ -22,15 +23,15 @@ This builds the bitstream and nothing more. Loading it is a flash, which a perso
 session and the lab log records (lab/targets.toml), done by hand with openFPGALoader. From the
 repo root:
 
-    python -m gateware.littlebit.network <build-dir> [<integer.json>]
+    python -m gateware.littlebit.network [--variant B] <build-dir> [<integer.json>]
 
 The network is r16's, models/littlebit/runs/r16/integer.json, unless another run's file is named:
 the rank sweep's are built the same way, for their LUTs, block RAM and clock (docs/littlebit.md,
-"Experiments").
+"Experiments"). It is Variant A unless `--variant B` is given.
 """
 
+import argparse
 import json
-import sys
 from pathlib import Path
 
 from amaranth import Cat, Const, Elaboratable, Module, ResetInserter, Signal
@@ -41,7 +42,7 @@ from gateware.bringup.blinky import Blinky
 from gateware.bringup.littlebit_layer import ANSWER, FRAME
 from gateware.bringup.pll_echo import CLOCK_HZ, clock_50_mhz
 from gateware.bringup.uart_echo import BAUD
-from gateware.cores.littlebit import LittleBitNetwork
+from gateware.cores.littlebit import VARIANTS, LittleBitNetwork
 from gateware.cores.uart import UARTRx, UARTTx
 
 __all__ = ["FRAME", "ANSWER", "PIXELS", "NetworkOverUART", "NetworkBoard", "r16", "read_network"]
@@ -63,10 +64,12 @@ def read_network(path):
 class NetworkOverUART(Elaboratable):
     """`network`'s `LittleBitNetwork` behind the UART, from a clock of `clock_hz`. `divisor` is
     the UART's cycles a bit, and `quiet` the cycles without a byte after which a frame is dropped;
-    each follows from the clock unless given, as the tests give small ones."""
+    each follows from the clock unless given, as the tests give small ones. `variant` is the
+    network's, "A" or "B"."""
 
-    def __init__(self, network, clock_hz, divisor=None, quiet=None):
+    def __init__(self, network, clock_hz, divisor=None, quiet=None, variant="A"):
         self.network = network
+        self.variant = variant
         self.clock_hz = clock_hz
         self.divisor = divisor if divisor is not None else round(clock_hz / BAUD)
         self.quiet = quiet if quiet is not None else clock_hz // 10
@@ -78,7 +81,7 @@ class NetworkOverUART(Elaboratable):
         m.submodules.rx = rx = UARTRx(self.divisor)
         m.submodules.tx = tx = UARTTx(self.divisor)
         m.d.comb += [rx.rx.eq(uart.rx.i), uart.tx.o.eq(tx.tx)]
-        m.submodules.network = net = LittleBitNetwork(self.network)
+        m.submodules.network = net = LittleBitNetwork(self.network, self.variant)
 
         # The frame's pixels, emptied with a dropped frame.
         drop = Signal()
@@ -138,23 +141,30 @@ class NetworkOverUART(Elaboratable):
 
 class NetworkBoard(Elaboratable):
     """A network over the UART, at 50 MHz from the PLL: what the board runs. The network is the
-    integer.json at `path`, r16's unless another is given."""
+    integer.json at `path`, r16's unless another is given, in `variant`, "A" or "B"."""
 
-    def __init__(self, path=NETWORK):
+    def __init__(self, path=NETWORK, variant="A"):
         self.path = path
+        self.variant = variant
 
     def elaborate(self, platform):
         m = Module()
         clock_50_mhz(m, platform)
-        m.submodules.network = NetworkOverUART(read_network(self.path), CLOCK_HZ)
+        network = read_network(self.path)
+        m.submodules.network = NetworkOverUART(network, CLOCK_HZ, variant=self.variant)
         return m
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 3:
-        sys.exit(__doc__)
-    build_dir = sys.argv[1] if len(sys.argv) > 1 else "build"
-    path = sys.argv[2] if len(sys.argv) > 2 else NETWORK
+    parser = argparse.ArgumentParser(
+        prog="python -m gateware.littlebit.network",
+        description="Builds the network's bitstream for the Colorlight i9.",
+    )
+    parser.add_argument("build_dir", nargs="?", default="build")
+    parser.add_argument("network", nargs="?", default=NETWORK, help="an integer.json; r16's if none")
+    parser.add_argument("--variant", choices=VARIANTS, default="A")
+    args = parser.parse_args()
     ColorlightI9Platform().build(
-        NetworkBoard(path), name="littlebit_network", build_dir=build_dir
+        NetworkBoard(args.network, args.variant), name="littlebit_network",
+        build_dir=args.build_dir,
     )

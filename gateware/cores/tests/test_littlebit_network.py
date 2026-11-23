@@ -2,13 +2,15 @@
 network, `LittleBitNetwork`, on Verilator, run by pytest (docs/littlebit.md, "cocotb tests"),
 against the golden model: on the test vectors crates/littlebit/src/vectors.rs writes
 (littlebit_vectors.json), and on MNIST's test images, check 2 of Gate 2. The rank sweep's other
-networks, r4, r8, r32 and r64, and E11's r42, are each given their test vectors too.
+networks, r4, r8, r32 and r64, and E11's r42, are each given their test vectors too. r16 runs in
+both variants, its tables in logic (A) and in block RAM (B, E9): on its test vectors, and on all
+10,000 MNIST test images in A and the first 1,000 in B.
 
 MNIST is never committed, so the golden model scores its images when the test runs: the pytest
 test runs `cargo run -p tentzhen-littlebit -- mnist-vectors`, which reads MNIST from the folder
-MNIST_DIR names and writes the images and their scores into the test's own temporary folder. It
-scores all 10,000 test images unless LITTLEBIT_MNIST_IMAGES says how many. From the repo root, in
-OSS CAD Suite's environment, with cargo on the path:
+MNIST_DIR names and writes the images and their scores into the test's own temporary folder.
+LITTLEBIT_MNIST_IMAGES, if set, says how many test images to score, at most. From the repo root,
+in OSS CAD Suite's environment, with cargo on the path:
 
     MNIST_DIR=<folder> python3 -m pytest gateware
 
@@ -42,6 +44,10 @@ PERIOD_NS = 20
 R16_CLOCKS = 1_219
 # The networks of the rank sweep's other runs, each a case of the test vectors after r16's.
 SWEEP = [c["name"] for c in VECTORS["network_cases"][1:]]
+# The MNIST test images r16 is given in each variant: all of them in A, check 2; in B, whose
+# arithmetic is A's and whose every image reads every row of every table, the first 1,000, as the
+# board was given in check 3.
+MNIST_IMAGES = {"A": 10_000, "B": 1_000}
 
 
 def dense_case(name):
@@ -81,12 +87,14 @@ def test_littlebit_output_layer_extremes(tmp_path):
     dense("dense-extremes", test, tmp_path)
 
 
-def test_littlebit_network(tmp_path):
-    images = os.environ.get("LITTLEBIT_MNIST_IMAGES", "10000")
+@pytest.mark.parametrize("variant", MNIST_IMAGES)
+def test_littlebit_network(variant, tmp_path):
+    most = MNIST_IMAGES[variant]
+    images = str(min(most, int(os.environ.get("LITTLEBIT_MNIST_IMAGES", most))))
     mnist = tmp_path / "mnist.json"
     command = ["cargo", "run", "-q", "--locked", "-p", "tentzhen-littlebit", "--"]
     subprocess.run([*command, "mnist-vectors", images, str(mnist)], cwd=ROOT, check=True)
-    net = LittleBitNetwork(network_of(VECTORS["network_cases"][0]["network"]))
+    net = LittleBitNetwork(network_of(VECTORS["network_cases"][0]["network"]), variant)
     tests = [
         "littlebit_network_scores_r16s_test_vectors_as_the_golden_model_does",
         "littlebit_network_scores_mnist_test_images_as_the_golden_model_does",
@@ -219,8 +227,9 @@ async def littlebit_network_scores_the_sweep_s_test_vectors_as_the_golden_model_
 
 @cocotb.test()
 async def littlebit_network_scores_mnist_test_images_as_the_golden_model_does(dut):
-    """r16 given MNIST's test images, all 10,000 unless LITTLEBIT_MNIST_IMAGES says fewer: every
-    score and digit is the golden model's, and each image takes 1,219 clocks. Check 2."""
+    """r16 given MNIST's test images, as many as the pytest test scored, LITTLEBIT_MNIST_IMAGES:
+    all 10,000 in Variant A unless told fewer, check 2. Every score and digit is the golden
+    model's, and each image takes 1,219 clocks."""
     c = json.loads(Path(os.environ["LITTLEBIT_MNIST"]).read_text())
     assert len(c["images"]) == int(os.environ["LITTLEBIT_MNIST_IMAGES"])
     await scores_each_image(dut, c)
