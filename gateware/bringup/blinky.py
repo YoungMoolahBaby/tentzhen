@@ -18,12 +18,16 @@ CLOCK_HZ = 25_000_000
 
 
 class Blinky(Elaboratable):
-    """Switches the LED on or off every half second of the 25 MHz clock."""
+    """Switches the LED on or off every half second of its clock, which runs at `clock_hz`: the
+    25 MHz oscillator's, unless it is told otherwise."""
+
+    def __init__(self, clock_hz=CLOCK_HZ):
+        self.clock_hz = clock_hz
 
     def elaborate(self, platform):
         m = Module()
         led = platform.request("led", 0)
-        half = CLOCK_HZ // 2
+        half = self.clock_hz // 2
         count = Signal(range(half))
         lit = Signal()
         with m.If(count == half - 1):

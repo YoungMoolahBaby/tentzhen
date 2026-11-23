@@ -1,7 +1,8 @@
 """A UART: 8 data bits, no parity, one stop bit, least significant bit first.
 
 `divisor` is the clock's cycles per bit: 217 for 115,200 baud from a 25 MHz clock. At that divisor
-both halves echo on the i9 (measured: lab/records/2026-11-22-i9-uart-echo.toml). What the
+both halves echo on the i9 (measured: lab/records/2026-11-22-i9-uart-echo.toml), and at 434 from
+the PLL's 50 MHz (measured: lab/records/2026-11-23-i9-pll-echo.toml). What the
 docstrings below say is tested at a divisor of 8 by cocotb on Verilator, in tests/test_uart.py.
 """
 
