@@ -1,9 +1,10 @@
 //! Project #3's golden model (docs/littlebit.md, "Verification"): MNIST read only as its pins
 //! allow ([`mnist`]); a training run's committed weights, dense or LittleBit, re-scored here in f32
-//! ([`run`]); the exporter, which makes a LittleBit run an integer network ([`export`]); and the
-//! integer golden model that runs it ([`integer`]); and the test vectors it writes for the
-//! gateware ([`vectors`]).
+//! ([`run`]); the exporter, which makes a LittleBit run an integer network ([`export`]); the integer
+//! golden model that runs it ([`integer`]); the test vectors it writes for the gateware
+//! ([`vectors`]); and the computer's side of a layer on the board, checked against it ([`board`]).
 
+pub mod board;
 pub mod export;
 pub mod integer;
 pub mod mnist;
@@ -334,6 +335,38 @@ mod tests {
         ]);
         assert!(integer::windows(&grid, 3, 3, 2, 3).is_err());
         assert!(integer::windows(&grid, 2, 3, 2, 2).is_err());
+    }
+
+    /// A frame is 0xA5 and the inputs; an answer is 0x5A and each output's y and z, z an int32
+    /// least significant byte first. An answer of the wrong length or header is refused, and one
+    /// that differs from the golden model says where.
+    #[test]
+    fn a_board_answer_is_read_as_its_frame_says() {
+        assert_eq!(board::frame(&[1, 2, 255]), [0xA5, 1, 2, 255]);
+        assert_eq!(board::answer_len(256), 1_281);
+        let answer = [0x5A, 7, 0x10, 0x00, 0x00, 0x00, 0, 0xFE, 0xFF, 0xFF, 0xFF];
+        let outputs = board::parse_answer(&answer, 2).unwrap();
+        assert_eq!(outputs, [(7, 16), (0, -2)]);
+        assert!(board::parse_answer(&answer[..10], 2).is_err());
+        let mut wrong = answer;
+        wrong[0] = 0x5B;
+        assert!(board::parse_answer(&wrong, 2).is_err());
+        let golden = integer::Trace {
+            p: vec![],
+            a: vec![],
+            t: vec![],
+            s: vec![],
+            z: vec![16, -2],
+            y: vec![7, 0],
+            saturated: 0,
+        };
+        assert_eq!(board::difference(&outputs, &golden), None);
+        let d = board::difference(&[(7, 16), (0, -3)], &golden).unwrap();
+        assert!(
+            d.contains("1 of 2 outputs differ") && d.contains("output 1"),
+            "{d}"
+        );
+        assert!(board::difference(&outputs[..1], &golden).is_some());
     }
 
     /// The gateware's test vectors are what the golden model writes, and load as their schema.

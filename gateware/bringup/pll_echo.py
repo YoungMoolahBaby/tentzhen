@@ -27,18 +27,24 @@ from gateware.cores.ecp5_pll import PLL
 CLOCK_HZ = 50_000_000
 
 
+def clock_50_mhz(m, platform):
+    """Gives module `m` the `sync` domain at 50 MHz, from the PLL fed by the board's 25 MHz
+    oscillator, as this design runs it."""
+    m.domains.sync = ClockDomain("sync")
+    clk25 = platform.request(platform.default_clk, 0)
+    f_in = int(platform.default_clk_frequency)
+    m.submodules.pll = pll = PLL(
+        clk25.i, f_in, clki_div=1, clkfb_div=2, clkop_div=12, clkop_cphase=5
+    )
+    assert pll.f_out_hz == CLOCK_HZ, f"the PLL gives {pll.f_out_hz} Hz, not {CLOCK_HZ}"
+
+
 class PLLEcho(Elaboratable):
     """The echo and the blinky, in a 50 MHz domain made by the PLL from the 25 MHz oscillator."""
 
     def elaborate(self, platform):
         m = Module()
-        m.domains.sync = ClockDomain("sync")
-        clk25 = platform.request(platform.default_clk, 0)
-        f_in = int(platform.default_clk_frequency)
-        m.submodules.pll = pll = PLL(
-            clk25.i, f_in, clki_div=1, clkfb_div=2, clkop_div=12, clkop_cphase=5
-        )
-        assert pll.f_out_hz == CLOCK_HZ, f"the PLL gives {pll.f_out_hz} Hz, not {CLOCK_HZ}"
+        clock_50_mhz(m, platform)
         m.submodules.echo = UARTEcho(CLOCK_HZ)
         return m
 
