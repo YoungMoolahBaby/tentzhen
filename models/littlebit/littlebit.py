@@ -9,7 +9,8 @@ output. This is the paper's Proposition 1 (Eq. 5), in its order, with a bias add
 
 Also the two quantizers that make training see what the integer hardware computes (the recipe's
 steps 3 and 4): sign() with a straight-through gradient, and uint8 activations on a power-of-two
-grid.
+grid. And E3's layer, binary weights with one scale per output (BinaryLinear), which uses the same
+sign().
 """
 
 import math
@@ -111,6 +112,38 @@ class LittleBitLinear(nn.Module):
 
     def extra_repr(self):
         return f"in={self.g.numel()}, out={self.h.numel()}, rank={self.rank}"
+
+
+class BinaryLinear(nn.Module):
+    """E3's layer: W ~ diag(h) sign(W), one scale per output, plus a bias, so
+    y = h * (sign(W) x) + b. W, out x in, is kept in float as latent weights: only its signs reach
+    the output. The parameters are registered in the order the input meets them: weight, h,
+    bias."""
+
+    def __init__(self, n_in, n_out):
+        super().__init__()
+        self.weight = nn.Parameter(torch.empty(n_out, n_in))
+        self.h = nn.Parameter(torch.empty(n_out))
+        self.bias = nn.Parameter(torch.empty(n_out))
+
+    @classmethod
+    def from_dense(cls, weight, bias):
+        """The layer started from a dense `weight` (out x in) and its `bias`: the latent weights
+        are `weight` itself, and each h the mean of |weight| along its output's row, the scale
+        that brings h sign(W) closest to W in squared error."""
+        n_out, n_in = weight.shape
+        layer = cls(n_in, n_out)
+        with torch.no_grad():
+            layer.weight.copy_(weight)
+            layer.h.copy_(weight.abs().mean(1))
+            layer.bias.copy_(bias)
+        return layer
+
+    def forward(self, x):
+        return (x @ Sign.apply(self.weight).T) * self.h + self.bias
+
+    def extra_repr(self):
+        return f"in={self.weight.shape[1]}, out={self.weight.shape[0]}"
 
 
 def dual_svid(weight, rank):
