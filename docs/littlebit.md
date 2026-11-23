@@ -555,8 +555,15 @@ and reports the clocks the network counted.
   memory, and once the engine registered a ROM's output, `synth_ecp5` put layer 1's ROMs in 4
   DP16KD blocks of block RAM: Variant B, not A. A tree of multiplexers is no `Switch`, and gave no
   block RAM.
-- **B, stored:** the same bits are the initial contents of an Amaranth memory, which Yosys maps to
-  block RAM. The synthesis log shows whether it landed in EBR. Not written yet.
+- **B, stored:** the same bits are the initial contents of an Amaranth memory, `StoredROM`, which
+  Yosys maps to block RAM. That holds for every table whose row an engine keeps in a register a
+  clock before using it: each hidden layer's g, V, U, h and bias, and the output layer's weights.
+  ℓ's r values are read on the clock they're used, and stay logic. So do the output layer's 10
+  biases, which are where its accumulators start. A memory gives its row a clock after it is
+  asked, so each is asked a clock early, for the row the engine will need next. The row then goes
+  into the same register as in Variant A, and the network takes the same clocks. Each memory is
+  marked `ram_style = "block"`, and the Yosys log shows where each landed ("E9, the weights in
+  block RAM", below). `python -m gateware.littlebit.network --variant B <build-dir>` builds it.
 
 **What the engines cost.** nextpnr's report for each of r16's two engines alone, at 50 MHz
 (OSS CAD Suite 2026-11-21, seed 1; `python -m gateware.cores.littlebit` writes one as Verilog,
@@ -675,6 +682,57 @@ held by the same tests. r = 42 also has a network case in the test vectors, and 
 like the sweep's: 1,271 clocks an image
 (`littlebit_network_scores_the_sweep_s_test_vectors_as_the_golden_model_does`).
 
+**E9, the weights in block RAM** (2026-11-23). E9 is E6's network, r16's integer.json, in Variant
+B: every table an engine keeps a row of is in block RAM ("Variant A and Variant B in Amaranth",
+above). It is built as E6 is, with `--variant B` (OSS CAD Suite 2026-11-21). nextpnr reports
+both, built from the same commit:
+
+| r16, the board's design | logic cells (TRELLIS_COMB) | flip-flops | 18 × 18 multipliers | block RAM | Fmax after routing | clocks an image | bitstream's sha256 |
+|---|---|---|---|---|---|---|---|
+| E6, Variant A | 12,640 | 3,050 | 20 | 1 DP16KD | 55.63 MHz | 1,219 | `754c51ae…` |
+| E9, Variant B | 7,400 | 3,080 | 20 | 14 DP16KD | 54.35 MHz | 1,219 | `2f70c963…` |
+
+The 14 blocks are the pixel FIFO, one for each of the hidden layers' 10 tables, and 3 for the
+output layer's weights, whose rows are 80 bits wide. The Yosys log maps all 11 tables' memories
+to block RAM, each `via $__DP16KD_` or `via $__PDPW16KD_`. A second build of E9 gave the same
+bitstream, byte for byte. Adding Variant B left Variant A's design as it was: built again from
+this commit, E6 gave the bitstream above, byte for byte. Its RTLIL, the file Yosys reads, is the
+same as before but for its notes of source lines, and so is r = 42's.
+
+The clocks are cocotb's. In both variants, r16 scores its six test images as the golden model
+does, in 1,219 clocks each. Variant B also does so on MNIST's first 1,000 test images, and each
+hidden layer computes as the golden model does, as does the convolution, with its gaps
+(`littlebit_network_scores_r16s_test_vectors_as_the_golden_model_does`,
+`littlebit_network_scores_mnist_test_images_as_the_golden_model_does`, and the layer tests). The
+build figures are nextpnr's, `trusted` (`fpga-toolchain`). No board has run E9.
+
+What it answers, for research question 3, at r = 16:
+
+- **Logic: Variant B takes 5,240 fewer cells, 41 % fewer.** The two variants differ only in where
+  the tables are and in how they are asked for a row (`gateware/cores/littlebit.py`). So the
+  5,240 cells are what the tables cost as logic, less what B adds to ask a clock early.
+- **Block RAM: 13 blocks more,** 14 of the chip's 108, within the plan's 80.
+- **Clock: both close at 50 MHz,** B at 54.35 MHz and A at 55.63. Each is one route at the default
+  seed, so whether B is slower at other seeds is `unknown`.
+- **Latency: the same, 1,219 clocks an image.** Variant B asks each memory a clock early, so it
+  spends no clock more. It does take no input on its first clock after a reset, while its
+  memories read their first rows.
+
+Two builds came before this one:
+
+- **The first fed each memory's output straight into the arithmetic,** the memory's own read
+  register standing in for the engine's. It took 8,109 cells and 10 blocks, and missed 50 MHz,
+  at 47.54. nextpnr's slowest path started at layer 1's g memory: 5.61 ns from the clock to its
+  output, then the multiplier and an accumulator, 21.03 ns in all against the 20 ns a clock has.
+  Asking each memory a clock early put the engine's register back between the memory and the
+  arithmetic.
+- **The second left the choice to Yosys,** with no `ram_style`. It put four of the tables in
+  logic: layer 1's h, and layer 2's g, U and h, each of 2,048 bits or fewer. Yosys's memory_libmap
+  costs a ROM in logic at a sixteenth a bit and a DP16KD at 128, and keeps the logic unless a block
+  costs less (`StoredROM`'s docstring). That build took 8,033 cells and 10 blocks, and closed at
+  57.48 MHz. E9 marks every table for block RAM, so that all the weights are stored, as Variant B
+  is defined.
+
 ## Verification
 
 Every stage must match the integer golden model bit for bit; accuracy is compared only at the step
@@ -752,7 +810,8 @@ inside the bitstream.
   a made-up 3 × 3 layer from 2 channels to 4 at rank 3, given the 25 windows of a 5 × 5 grid with
   gaps between inputs. Every output's y and z must be the golden model's, and every case
   saturates some latents and clamps some outputs at each end. The engine takes the windows as the
-  golden model builds them; gateware that builds them from a grid is not written yet.
+  golden model builds them; gateware that builds them from a grid is not written yet. Each layer
+  test runs in both variants, the tables in logic and in block RAM.
 - An output-layer test: r16's output layer alone against the golden model, given all zeros, all
   255 and 4 random inputs. A made-up layer from 4 inputs to 5 is tested too: its scores reach both
   ends of an int32, and some tie, so the argmax must pick the first of the highest
@@ -764,7 +823,10 @@ inside the bitstream.
   the test's own temporary folder (`cargo run -p tentzhen-littlebit -- mnist-vectors <count>
   <file>`). The sweep's other networks, r4, r8, r32 and r64, are each given r16's six test images,
   and checked for every score, the digit and 1,187 + 2r clocks an image
-  (`littlebit_network_scores_the_sweep_s_test_vectors_as_the_golden_model_does`). A top-level test
+  (`littlebit_network_scores_the_sweep_s_test_vectors_as_the_golden_model_does`). r16 in Variant B,
+  E9, is given its test vectors and MNIST's first 1,000 test images, as the board was given in
+  check 3. Its arithmetic is Variant A's, and every image reads every row of every table, so the
+  gate doesn't spend another 10,000 images on it. A top-level test
   sends r16 frames over the UART
   (`gateware/littlebit/tests/test_network_over_uart.py`).
 - Waveforms (FST) kept only for failing tests.
@@ -875,8 +937,12 @@ Gate 0's echo goes through the same DAPLink serial port as the bench's Phase 1 "
   (Hardware architecture, "What each rank costs").
 - [x] Find the largest rank that fits, E11, by raising r from 32 and then bisecting
   (2026-11-23): r = 42 closes at 50.29 MHz in nextpnr, and r = 43 misses, at 49.68 (Hardware
-  architecture, "E11, the largest rank that fits"). Next: E9, Variant B; E10, the wider
-  network; and E12, the clock push.
+  architecture, "E11, the largest rank that fits").
+- [x] Write Variant B, the tables in block RAM, and build r16 in it, E9
+  (`gateware/cores/littlebit.py`, 2026-11-23): 7,400 logic cells and 14 DP16KD at 54.35 MHz in
+  nextpnr, against Variant A's 12,640 cells at 55.63 MHz, in the same 1,219 clocks an image
+  (Hardware architecture, "E9, the weights in block RAM"). Next: E10, the wider network, and E12,
+  the clock push.
 
 ## Experiments
 
@@ -894,7 +960,7 @@ Each cell fills as its run finishes, from the run's record or test.
 | E6 | LittleBit r = 16 | A, hardwired | 0.125 | 97.17 (float 97.13) | 12,640 | 1 (the pixel FIFO) | 55.63 | 13.73 end to end; 1,219 clocks each, 41,017 at 50 MHz | Gate 3 passed |
 | E7 | LittleBit r = 32 | A, hardwired | 0.209 | 97.76 (float 97.72) | 20,172 | 1 (the pixel FIFO) | 50.43 | 1,251 clocks each, 39,968 at 50 MHz | built; not run on the board |
 | E8 | LittleBit r = 64 | A, hardwired | 0.376 | 98.15 (float 98.14) | 35,139 | 1 (the pixel FIFO) | 49.55, short of 50 | 1,315 clocks each; 50 MHz not met | over the cell budget, and short of 50 MHz |
-| E9 | LittleBit r = 16 | B, block RAM | 0.125 | | | | | | planned |
+| E9 | LittleBit r = 16 | B, block RAM | 0.125 | 97.17 (float 97.13): E6's integer network | 7,400 | 14 (13 for the weights, 1 the pixel FIFO) | 54.35 | 1,219 clocks each, 41,017 at 50 MHz | built; not run on the board |
 | E10 | the same weight bits as E7, wider: 784 → 1024 → 512 → 10 | A, hardwired | set to match E7 | | | | | | planned |
 | E11 | LittleBit r = 42, the largest fit: r raised until place-and-route or 50 MHz fails | A, hardwired | 0.261 | 97.95 (float 97.96) | 24,934 | 1 (the pixel FIFO) | 50.29 | 1,271 clocks each, 39,339 at 50 MHz | built; not run on the board |
 | E12 | clock push: E6, LittleBit r = 16, at the highest clock that passes | A, hardwired | 0.125 | | | | | | planned |

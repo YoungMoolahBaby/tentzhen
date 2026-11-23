@@ -30,16 +30,30 @@ in behind them. The engine takes no input in stages 2 and 3. Given an input ever
 takes inputs + rank + outputs + 1 clocks, its last output comes two clocks after that, and the
 next vector's first input is taken on the first of those two.
 
-The ROMs, `ROM`, are trees of multiplexers on constants, so Yosys makes them logic. That the
-engine matches the golden model, and takes those clocks, is `tested` on its test vectors
-(tests/test_littlebit.py, from crates/littlebit/src/vectors.rs). What it costs in LUTs, and how
-fast it closes, are nextpnr's to report: `python -m gateware.cores.littlebit` writes an engine
-alone as Verilog, for Yosys and nextpnr.
+Each engine keeps its tables one of two ways, its `variant` (docs/littlebit.md, "Variant A and
+Variant B in Amaranth"). In Variant A, the ROMs, `ROM`, are trees of multiplexers on constants,
+so Yosys makes them logic. In Variant B, every table whose row is kept in a register a clock
+before it is used (g, V, U, h and the bias, and the output layer's weights) is the initial
+contents of a memory, `StoredROM`, for Yosys to put in block RAM. A memory's read port gives its
+row a clock after it is asked, so it is asked a clock early, for the index the engine will be at
+next, and its row is kept in the same register as in Variant A: both take the same clocks, and
+the block RAM's slow output feeds only that register. ℓ is read on the clock it is used, and
+stays logic in both. That the engine matches the golden model, and takes those clocks, is
+`tested` on its test vectors (tests/test_littlebit.py, from crates/littlebit/src/vectors.rs).
+What it costs in LUTs, and how fast it closes, are nextpnr's to report:
+`python -m gateware.cores.littlebit` writes an engine alone as Verilog, for Yosys and nextpnr.
 """
 
 from amaranth import Array, Const, Elaboratable, Module, Mux, Signal, signed, unsigned
+from amaranth.lib.memory import Memory
 
-__all__ = ["ROM", "LittleBitEngine", "DenseEngine", "LittleBitNetwork", "Alone", "sign_bits"]
+__all__ = [
+    "ROM", "StoredROM", "VARIANTS", "LittleBitEngine", "DenseEngine", "LittleBitNetwork",
+    "Alone", "sign_bits",
+]
+
+# A, the tables in logic; B, in memories, for block RAM.
+VARIANTS = ("A", "B")
 
 # The largest product of a uint8 input and an int8 scale, in size: 255 * 128.
 P_MAX = 255 * 128
@@ -81,6 +95,61 @@ class ROM(Elaboratable):
         return m
 
 
+class StoredROM(Elaboratable):
+    """Row `index` of `rows`, integers of shape `shape`, on `data` a clock later: the rows are the
+    initial contents of a memory with one synchronous read port and no write port, which Yosys
+    maps to block RAM (Variant B). `data` is the row `index` named on the clock before.
+
+    The memory is marked `ram_style = "block"`, so that every table of Variant B is in block RAM.
+    Without it, Yosys's memory_libmap puts a ROM of 2,048 bits or fewer in logic: it costs a ROM
+    in logic at a sixteenth a bit (`logic_cost_rom`, passes/memory/memory_libmap.cc) and a DP16KD
+    at 128 (techlibs/lattice/brams_16kd.txt), and keeps the logic unless a block costs less. Four
+    of r16's tables are that small."""
+
+    def __init__(self, rows, shape):
+        self.rows = list(rows)
+        self.memory = Memory(
+            shape=shape, depth=max(len(self.rows), 2), init=self.rows, attrs={"ram_style": "block"}
+        )
+        self.port = self.memory.read_port()
+        self.index = self.port.addr
+        self.data = self.port.data
+
+    def elaborate(self, platform):
+        m = Module()
+        m.submodules.memory = self.memory
+        return m
+
+
+def check_variant(variant):
+    if variant not in VARIANTS:
+        raise ValueError(f"variant {variant!r} is none of {', '.join(VARIANTS)}")
+
+
+def table(rows, shape, variant):
+    """The ROM of `rows` that `variant` makes: logic in A, a memory in B."""
+    return ROM(rows, shape) if variant == "A" else StoredROM(rows, shape)
+
+
+def admit(m, variant, x_valid):
+    """An engine's `x_ready` while it waits for inputs, and the condition on which it takes one.
+    In Variant A, always ready, and it takes an input whenever one is offered. In Variant B, ready
+    from the second clock after a reset. On the clock of a reset, a memory may be asked for the
+    row after the first, for an input the reset then refuses; on the clock after, it is asked for
+    the first row, which it gives on the next, when the engine is first ready."""
+    if variant == "A":
+        return Const(1), x_valid
+    primed = Signal()
+    m.d.sync += primed.eq(1)
+    return primed, x_valid & primed
+
+
+def following(index, last, step):
+    """The index a counter from 0 to `last` takes on the next clock: one more on a clock `step`
+    is high, back to 0 after `last`, and the same otherwise."""
+    return Mux(step, Mux(index == last, 0, index + 1), index)
+
+
 def signed_sum(terms):
     """The sum of `terms`, as a balanced tree of adds."""
     while len(terms) > 1:
@@ -94,9 +163,18 @@ class LittleBitEngine(Elaboratable):
 
     In: `x`, taken on a clock when `x_valid` and `x_ready` are both high, a vector's inputs in
     order. Out: `y`, a vector's outputs in order, each on a clock `y_valid` is high, the last with
-    `y_last`; and beside each, `z`, the int32 before the shift and clamp, for tests to compare."""
+    `y_last`; and beside each, `z`, the int32 before the shift and clamp, for tests to compare.
 
-    def __init__(self, layer):
+    `variant` says where its tables are: "A" in logic, "B" in memories. Either way, each row is
+    kept in a register a clock before the arithmetic it feeds. A ROM gives its row on the clock it
+    is asked, so it is given the index the engine is at. A memory's read port gives its row a
+    clock later, so it is given the index the engine will be at on the next clock: its row is
+    then there to keep on the clock the engine keeps it. In Variant B, the engine takes no input
+    on its first clock after a reset, while its memories read their first rows."""
+
+    def __init__(self, layer, variant="A"):
+        check_variant(variant)
+        self.variant = variant
         self.inputs = layer["inputs"]
         self.outputs = layer["outputs"]
         self.rank = layer["rank"]
@@ -123,14 +201,15 @@ class LittleBitEngine(Elaboratable):
     def elaborate(self, platform):
         m = Module()
         layer, n_in, n_out, rank = self.layer, self.inputs, self.outputs, self.rank
+        variant = self.variant
 
         # V's and U's rows, one per input and one per output: bit k is 1 where sign k is `-`.
-        m.submodules.g = g = ROM(layer["g"], signed(8))
-        m.submodules.v = v = ROM([sign_bits(row) for row in layer["v"]], unsigned(rank))
+        m.submodules.g = g = table(layer["g"], signed(8), variant)
+        m.submodules.v = v = table([sign_bits(row) for row in layer["v"]], unsigned(rank), variant)
         m.submodules.l = l = ROM(layer["l"], signed(8))
-        m.submodules.u = u = ROM([sign_bits(row) for row in layer["u"]], unsigned(rank))
-        m.submodules.h = h = ROM(layer["h"], signed(8))
-        m.submodules.bias = bias = ROM(layer["bias"], signed(32))
+        m.submodules.u = u = table([sign_bits(row) for row in layer["u"]], unsigned(rank), variant)
+        m.submodules.h = h = table(layer["h"], signed(8), variant)
+        m.submodules.bias = bias = table(layer["bias"], signed(32), variant)
 
         i = Signal(range(max(n_in, 2)))
         k = Signal(range(max(rank, 2)))
@@ -151,7 +230,9 @@ class LittleBitEngine(Elaboratable):
         first_1 = Signal()
         valid_1 = Signal()
         p = Signal(signed(17))
-        m.d.comb += [g.index.eq(i), v.index.eq(i), p.eq(x_1 * g_1)]
+        if variant == "A":
+            m.d.comb += [g.index.eq(i), v.index.eq(i)]
+        m.d.comb += p.eq(x_1 * g_1)
         m.d.sync += valid_1.eq(0)
         with m.If(valid_1):
             for j in range(rank):
@@ -181,7 +262,8 @@ class LittleBitEngine(Elaboratable):
         s = Signal(range(-s_max, s_max + 1))
         h_2 = Signal(signed(8))
         bias_2 = Signal(signed(32))
-        m.d.comb += [u.index.eq(o), h.index.eq(o_1), bias.index.eq(o_1)]
+        if variant == "A":
+            m.d.comb += [u.index.eq(o), h.index.eq(o_1), bias.index.eq(o_1)]
         m.d.sync += [
             valid_u1.eq(0),
             s.eq(signed_sum([Mux(u_1[j], nt[j], t[j]) for j in range(rank)])),
@@ -208,10 +290,11 @@ class LittleBitEngine(Elaboratable):
             self.y_last.eq(valid_u2 & (o_2 == n_out - 1)),
         ]
 
-        with m.FSM():
+        ready, take = admit(m, variant, self.x_valid)
+        with m.FSM() as fsm:
             with m.State("V"):
-                m.d.comb += self.x_ready.eq(1)
-                with m.If(self.x_valid):
+                m.d.comb += self.x_ready.eq(ready)
+                with m.If(take):
                     m.d.sync += [
                         x_1.eq(self.x),
                         g_1.eq(g.data),
@@ -243,6 +326,21 @@ class LittleBitEngine(Elaboratable):
                     m.next = "V"
                 with m.Else():
                     m.d.sync += o.eq(o + 1)
+
+        # Variant B's memories, each given the index the engine will be at on the next clock:
+        # stage 1's input i, taken on a clock x_valid and x_ready are both high; stage 3's output
+        # o, one more each clock in U; and o_1, o a clock behind, which takes o's value in U.
+        if variant == "B":
+            i_next = following(i, n_in - 1, self.x_valid & self.x_ready)
+            o_next = following(o, n_out - 1, fsm.ongoing("U"))
+            o_1_next = Mux(fsm.ongoing("U"), o, o_1)
+            m.d.comb += [
+                g.index.eq(i_next),
+                v.index.eq(i_next),
+                u.index.eq(o_next),
+                h.index.eq(o_1_next),
+                bias.index.eq(o_1_next),
+            ]
         return m
 
 
@@ -263,9 +361,12 @@ class DenseEngine(Elaboratable):
 
     The accumulators are as wide as the scores can get, from the weights and biases, so none
     wraps; a layer whose scores could pass an int32 is refused, as the golden model refuses one
-    that does."""
+    that does. `variant` says where the weights are, as the LittleBit engine's does; the biases
+    are the accumulators' starts, and stay logic in both."""
 
-    def __init__(self, dense):
+    def __init__(self, dense, variant="A"):
+        check_variant(variant)
+        self.variant = variant
         self.inputs = dense["inputs"]
         self.outputs = dense["outputs"]
         weight, bias = dense["weight"], dense["bias"]
@@ -297,7 +398,7 @@ class DenseEngine(Elaboratable):
 
         # Input i's column of the weights: output o's int8 in bits 8o to 8o + 7.
         columns = [sum((weight[o][i] & 0xFF) << (8 * o) for o in range(n_out)) for i in range(n_in)]
-        m.submodules.w = w = ROM(columns, unsigned(8 * n_out))
+        m.submodules.w = w = table(columns, unsigned(8 * n_out), self.variant)
 
         i = Signal(range(max(n_in, 2)))
         j = Signal(range(max(n_out, 2)))
@@ -309,7 +410,8 @@ class DenseEngine(Elaboratable):
         w_1 = Signal(unsigned(8 * n_out))
         first_1 = Signal()
         valid_1 = Signal()
-        m.d.comb += w.index.eq(i)
+        if self.variant == "A":
+            m.d.comb += w.index.eq(i)
         m.d.sync += valid_1.eq(0)
         with m.If(valid_1):
             for o in range(n_out):
@@ -318,10 +420,11 @@ class DenseEngine(Elaboratable):
 
         best = Signal(range(self.low, self.high + 1))
         m.d.sync += self.done.eq(0)
+        ready, take = admit(m, self.variant, self.x_valid)
         with m.FSM():
             with m.State("sum"):
-                m.d.comb += self.x_ready.eq(1)
-                with m.If(self.x_valid):
+                m.d.comb += self.x_ready.eq(ready)
+                with m.If(take):
                     m.d.sync += [x_1.eq(self.x), w_1.eq(w.data), first_1.eq(i == 0), valid_1.eq(1)]
                     with m.If(i == n_in - 1):
                         m.d.sync += i.eq(0)
@@ -340,6 +443,11 @@ class DenseEngine(Elaboratable):
                     m.next = "sum"
                 with m.Else():
                     m.d.sync += j.eq(j + 1)
+
+        # In Variant B, the weights' memory is given the input the engine will be at on the next
+        # clock, as the LittleBit engine's are.
+        if self.variant == "B":
+            m.d.comb += w.index.eq(following(i, n_in - 1, self.x_valid & self.x_ready))
         return m
 
 
@@ -357,9 +465,11 @@ class LittleBitNetwork(Elaboratable):
     In: `x`, an image's pixels in order, each taken on a clock when `x_valid` and `x_ready` are
     both high. Out: `scores`, `digit` and `done`, as the output layer's, and `cycles`, a uint32:
     the clocks the image took, from the one that took its first pixel to the one that raised
-    `done`, both counted. The next image's first pixel can be taken on the clock `done` is high."""
+    `done`, both counted. The next image's first pixel can be taken on the clock `done` is high.
+    `variant`, "A" or "B", is every engine's."""
 
-    def __init__(self, network):
+    def __init__(self, network, variant="A"):
+        check_variant(variant)
         layers, dense = network["layers"], network["output"]
         inputs = 784
         for j, layer in enumerate(layers):
@@ -369,8 +479,8 @@ class LittleBitNetwork(Elaboratable):
         if dense["inputs"] != inputs:
             raise ValueError(f"the output layer takes {dense['inputs']} inputs, not {inputs}")
         self.pixel_shift = network["pixel_shift"]
-        self.engines = [LittleBitEngine(layer) for layer in layers]
-        self.dense = DenseEngine(dense)
+        self.engines = [LittleBitEngine(layer, variant) for layer in layers]
+        self.dense = DenseEngine(dense, variant)
         self.x = Signal(8)
         self.x_valid = Signal()
         self.x_ready = Signal()
@@ -428,8 +538,8 @@ class Alone(Elaboratable):
     """An engine as its own top, for Yosys and nextpnr to size: its ports, less `z`, which only
     tests read, so that synthesis drops what makes it."""
 
-    def __init__(self, layer):
-        self.engine = LittleBitEngine(layer)
+    def __init__(self, layer, variant="A"):
+        self.engine = LittleBitEngine(layer, variant)
         self.x = Signal(8)
         self.x_valid = Signal()
         self.x_ready = Signal()
@@ -455,8 +565,9 @@ class Alone(Elaboratable):
 
 
 if __name__ == "__main__":
-    # python -m gateware.cores.littlebit <integer.json> <layer index> <out.v>, from the repo root.
-    # The engine alone, with nothing at its ports: then, for instance,
+    # python -m gateware.cores.littlebit <integer.json> <layer index> <out.v> [A | B], from the
+    # repo root. The engine alone, in Variant A unless B is named, with nothing at its ports:
+    # then, for instance,
     #   yosys -p "read_verilog <out.v>; synth_ecp5 -top engine -json <out.json>"
     #   nextpnr-ecp5 --45k --package CABGA381 --speed 6 --freq 50 --seed 1 --json <out.json>
     import json
@@ -466,5 +577,6 @@ if __name__ == "__main__":
     from amaranth.back import verilog
 
     network, index, out = sys.argv[1], int(sys.argv[2]), Path(sys.argv[3])
-    top = Alone(json.loads(Path(network).read_text())["layers"][index])
+    variant = sys.argv[4] if len(sys.argv) > 4 else "A"
+    top = Alone(json.loads(Path(network).read_text())["layers"][index], variant)
     out.write_text(verilog.convert(top, name="engine", ports=top.ports()))

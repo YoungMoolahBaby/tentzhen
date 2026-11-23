@@ -1,7 +1,8 @@
 """cocotb tests of gateware/cores/littlebit.py, the LittleBit layer engine, on Verilator, run by
 pytest (docs/littlebit.md, "cocotb tests"): its weight ROMs read back against integer.json, and
 the layer against the golden model, on the test vectors crates/littlebit/src/vectors.rs writes
-(littlebit_vectors.json). From the repo root, in OSS CAD Suite's environment:
+(littlebit_vectors.json). Each engine test runs on both variants, the tables in logic (A) and in
+memories (B). From the repo root, in OSS CAD Suite's environment:
 
     python3 -m pytest gateware
 
@@ -14,11 +15,12 @@ import random
 from pathlib import Path
 
 import cocotb
+import pytest
 from amaranth import Elaboratable, Module, Signal
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, Timer
 
-from gateware.cores.littlebit import ROM, LittleBitEngine, sign_bits
+from gateware.cores.littlebit import ROM, VARIANTS, LittleBitEngine, sign_bits
 from gateware.sim import run
 
 HERE = Path(__file__).resolve().parent
@@ -74,24 +76,27 @@ def test_littlebit_sign_roms(tmp_path):
     run(roms, roms.ports(), "sign_roms", "test_littlebit", tests, tmp_path)
 
 
-def engine(name, test, tmp_path):
-    e = LittleBitEngine(layer_of(case(name)))
+def engine(name, variant, test, tmp_path):
+    e = LittleBitEngine(layer_of(case(name)), variant)
     run(e, e.ports(), "littlebit_engine", "test_littlebit", [test], tmp_path)
 
 
-def test_littlebit_engine_r16_layer_1(tmp_path):
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_littlebit_engine_r16_layer_1(variant, tmp_path):
     test = "littlebit_engine_computes_r16_layer_1_as_the_golden_model_does"
-    engine("r16-layer-1", test, tmp_path)
+    engine("r16-layer-1", variant, test, tmp_path)
 
 
-def test_littlebit_engine_r16_layer_2(tmp_path):
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_littlebit_engine_r16_layer_2(variant, tmp_path):
     test = "littlebit_engine_computes_r16_layer_2_as_the_golden_model_does"
-    engine("r16-layer-2", test, tmp_path)
+    engine("r16-layer-2", variant, test, tmp_path)
 
 
-def test_littlebit_engine_convolution(tmp_path):
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_littlebit_engine_convolution(variant, tmp_path):
     test = "littlebit_engine_computes_each_window_of_a_convolution_as_the_golden_model_does"
-    engine("convolution-3x3", test, tmp_path)
+    engine("convolution-3x3", variant, test, tmp_path)
 
 
 @cocotb.test()
