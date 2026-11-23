@@ -989,6 +989,7 @@ Phase 0 may run beside Phase 1: it needs only the board and the toolchain.
    r = 16 on 2026-11-23 (Verification, "Check 3 passes at r = 16").
 5. **Phase 4, experiments and write-up.** Run E1–E12, fill the results table, plot accuracy vs.
    bits per weight and LUTs vs. bits. **Gate 4:** the table is full, and both plots are made.
+   Gate 4 passed on 2026-11-23 (Experiments, "The two plots").
 6. **Phase 5, a chip's layout, with no chip made.** The largest hardwired LittleBit layer that fits
    one Tiny Tapeout tile, laid out with LibreLane. Its Classic flow takes Verilog, which Amaranth
    emits, and runs Yosys's synthesis and OpenROAD's placement and routing
@@ -1064,8 +1065,11 @@ Gate 0's echo goes through the same DAPLink serial port as the bench's Phase 1 "
 - [x] Train E10, the 784 → 1024 → 512 → 10 network at r = 9, whose hidden layers hold no more
   bits than E7's, from a dense start of its own; export it and build it (2026-11-23). It gets
   9,546 test images right as integers, 230 fewer than E7, in 17,455 logic cells at 53.52 MHz
-  (Model, "E10, the wider network"; Hardware architecture, "E10 on the board's design"). Next:
-  the two plots, which close Gate 4.
+  (Model, "E10, the wider network"; Hardware architecture, "E10 on the board's design").
+- [x] Fill the experiments table and draw its two plots, accuracy against bits per weight and
+  logic cells against sign bits (`crates/littlebit/src/plots.rs`, 2026-11-23). The table's
+  accuracies are `tested` against the runs, and the plots against the table (Experiments, "The
+  two plots"). Gate 4 passes. Next: Phase 5, a hardwired layer laid out as a chip.
 
 ## Experiments
 
@@ -1075,7 +1079,7 @@ Each cell fills as its run finishes, from the run's record or test.
 
 | run | model (784 → 256 → 128 → 10 unless noted) | variant | layer-1 total bpw | integer test acc (%) | LUTs | EBR blocks | Fmax (MHz) | images/s | status |
 |---|---|---|---|---|---|---|---|---|---|
-| E1 | FP32 dense (the ceiling) | computer only | 32 | 98.31 (float) | | | | | done |
+| E1 | FP32 dense (the ceiling) | computer only | 32 | 98.31 (float) | — | — | — | — | done |
 | E2 | int8 dense | computer only | 8 | 98.33 (float 98.35) | — | — | — | — | done |
 | E3 | binary dense, one scale per output | computer only | 1.010 | 98.24 (float 98.24) | — | — | — | — | done |
 | E4 | LittleBit r = 4 | A, hardwired | 0.062 | 87.91 (float 88.02) | 6,889 | 1 (the pixel FIFO) | 55.27 | 1,195 clocks each, 41,841 at 50 MHz | built; not run on the board |
@@ -1092,8 +1096,35 @@ A dash marks a figure that a computer-only run doesn't have. E3's 1.010 bits a w
 signs and one 8-bit scale per output, (784 × 256 + 8 × 256) / (784 × 256). Like the LittleBit
 formula, it counts no bias, and no power-of-two exponent.
 
-The headline results are two plots made from this table once it is full: accuracy vs. total bits
-per weight (E1–E8), and LUTs vs. sign bits for Variant A (E4–E8, E11).
+The table's accuracies are what the runs get: each integer network as the golden model scores it,
+and each float run's count, from its summary, on the 10,000 test images (`tested`,
+`the_experiments_table_s_accuracies_are_what_the_runs_get`). Its LUTs, EBR blocks and Fmax are
+nextpnr's, `trusted` (`fpga-toolchain`). Its clocks an image are cocotb's, and the images a second
+beside them are worked out from those clocks at the clock named. E6's 13.73 images a second end to
+end is the one measured on a board (`2026-11-23-i9-littlebit-network`).
+
+**The two plots** (2026-11-23), drawn from this table by `cargo run -p tentzhen-littlebit --
+plots` (`crates/littlebit/src/plots.rs`). `the_plots_are_what_the_experiments_table_draws` fails
+if either file is not what the table draws. Each image's description lists every value it plots,
+and the table above gives them too.
+
+![Test accuracy against layer 1's total bits per weight, E1 to E8](img/littlebit-accuracy.svg)
+
+- **Accuracy holds to about 1/4 bit a weight, then falls.** From E8's 0.376 bits to E6's 0.125,
+  the integer networks lose 98 test images, 98.15 % to 97.17 %. From there to E4's 0.062 bits
+  they lose 926 more, to 87.91 %.
+- **The dense baselines sit level from 1 bit to 32.** E3's binary weights, E2's int8 and E1's
+  FP32 get 98.24 %, 98.33 % and 98.31 %, within 9 images of each other. E8, at 0.376 bits, is 9
+  images under E3.
+
+![Logic cells against the sign bits hardwired, Variant A, E4 to E8 and E11](img/littlebit-cells.svg)
+
+- **The cells grow about in line with the sign bits,** some 470 a step of r, 0.33 a sign bit, on
+  top of about 5,000 for the rest of the design ("What each rank costs", in Hardware
+  architecture).
+- **E8 is the only one past Gate 2's 30,000 cells,** and the only one that misses 50 MHz.
+  Timing stops the rank before the cells do: E11, r = 42, the largest that closes, takes 24,934
+  ("E11, the largest rank that fits").
 
 ## After MNIST: Clean Up's policy
 

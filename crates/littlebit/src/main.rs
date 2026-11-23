@@ -8,6 +8,10 @@
 //! `cargo run -p tentzhen-littlebit -- vectors`, from the repo root, writes the gateware's test
 //! vectors (`tentzhen_littlebit::vectors`). They need no MNIST.
 //!
+//! `cargo run -p tentzhen-littlebit -- plots`, from the repo root, draws Gate 4's two plots from
+//! docs/littlebit.md's experiments table and writes them under docs/img/
+//! (`tentzhen_littlebit::plots`). They need no MNIST.
+//!
 //! `cargo run -p tentzhen-littlebit -- mnist-vectors <count> <file>`, from the repo root, writes
 //! r16's scores and digits for MNIST's first `<count>` test images, with the images, to `<file>`,
 //! for the full-network cocotb test (`tentzhen_littlebit::vectors::mnist`). `<file>` belongs
@@ -33,7 +37,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
-use tentzhen_littlebit::{board, export, integer, mnist, run, vectors};
+use tentzhen_littlebit::{board, export, integer, mnist, plots, run, vectors};
 
 fn mnist_dir() -> Result<PathBuf, String> {
     std::env::var_os("MNIST_DIR")
@@ -233,9 +237,26 @@ fn network(port: &str, source: &[String]) -> Result<String, String> {
     }
 }
 
-const USAGE: &str = "usage: tentzhen-littlebit export <run-folder> | vectors | \
+const USAGE: &str = "usage: tentzhen-littlebit export <run-folder> | vectors | plots | \
                      mnist-vectors <count> <file> | layer <port> (vectors | mnist <count>) | \
                      network <port> (vectors | mnist <count>)";
+
+fn write_plots() -> Result<String, String> {
+    let doc = std::fs::read_to_string(plots::DOC).map_err(|e| format!("{}: {e}", plots::DOC))?;
+    let rows = plots::experiments(&doc)?;
+    let mut report = String::new();
+    for (file, svg) in [
+        (plots::ACCURACY, plots::accuracy(&rows)?),
+        (plots::CELLS, plots::cells(&rows)?),
+    ] {
+        if let Some(dir) = Path::new(file).parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        std::fs::write(file, svg).map_err(|e| format!("{file}: {e}"))?;
+        report += &format!("wrote {file}\n");
+    }
+    Ok(report)
+}
 
 fn write_mnist_vectors(count: &str, file: &Path) -> Result<String, String> {
     let count: usize = count.parse().map_err(|e| format!("count {count}: {e}"))?;
@@ -350,6 +371,7 @@ fn main() -> ExitCode {
     let result = match args.as_slice() {
         [command, folder] if command == "export" => export(Path::new(folder)),
         [command] if command == "vectors" => write_vectors(),
+        [command] if command == "plots" => write_plots(),
         [command, count, file] if command == "mnist-vectors" => {
             write_mnist_vectors(count, Path::new(file))
         }
