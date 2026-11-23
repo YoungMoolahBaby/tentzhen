@@ -27,8 +27,11 @@ jobs:
   gate:
     name: Quality Gate
     runs-on: ubuntu-24.04
-    # A cold cache builds DuckDB from source twice (check and test): about 17 minutes.
-    timeout-minutes: 40
+    # A cold cache builds DuckDB from source twice (clippy and test), and the gateware's cocotb
+    # tests take 12 to 15 minutes more. A run with no cache is cut off at 40: via-balaena's first
+    # run of this branch was, in the cocotb step, after clippy's 10 minutes and the tests' 15
+    # (run 45261560163, 2026-11-23). A run whose cache is warm takes 16 to 20.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
