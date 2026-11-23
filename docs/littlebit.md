@@ -438,13 +438,16 @@ its outputs to the next as it makes them, one a clock, and the next takes them a
 That makes 1,187 + 2r clocks from the first pixel to the digit: 1,219 at r = 16, 24.4 µs at
 50 MHz. It is `tested` as both the design's cycle counter and the test count it
 (`littlebit_network_scores_r16s_test_vectors_as_the_golden_model_does`). The spec estimated
-1,550 + 4r. On the board the counter reports it with each answer, `measured` once the network
-runs there.
+1,550 + 4r. On the board the counter reported 1,219 for each of the 1,006 images it was sent,
+`measured`, `2026-11-23-i9-littlebit-network`. At exactly 50 MHz that is 24.38 µs, or 41,017
+images a second if the link kept up. The PLL's clock is `measured` only as close enough to 50 MHz
+for the UART at 115,200 baud (`2026-11-23-i9-pll-echo`), not to how many places.
 
 **The serial link sets the pace.** At 115,200 baud and 10 bits a byte (8N1, assumed), the 785-byte
 request takes 68.1 ms and the 46-byte reply 4.0 ms: at most 13.9 images a second, however fast the
-network is. So each run reports two speeds, compute from the cycle counter and end to end. The
-DAPLink's top baud rate is `unknown`.
+network is. So each run reports two speeds, compute from the cycle counter and end to end. End to
+end, the board run managed 13.73 images a second, 1,000 images in 72.8 s, `measured`,
+`2026-11-23-i9-littlebit-network`. The DAPLink's top baud rate is `unknown`.
 
 For a throughput test that leaves the link out, the spec preloaded 512 test images into block RAM.
 They do not fit: 512 images take 401,408 bytes, and all 108 blocks hold 248,832 (1,944 kbit), so
@@ -464,7 +467,10 @@ arrives. Then it feeds them to the network back to back, so the cycle count cove
 alone, not the serial link. A frame left part way is dropped after 100 ms of silence, as the one
 layer's was. In cocotb, without the PLL and at a UART divisor of 8, it answers two frames as the
 golden model does, each in 1,219 clocks, and drops a part one
-(`gateware/littlebit/tests/test_network_over_uart.py`).
+(`gateware/littlebit/tests/test_network_over_uart.py`). `cargo run -p tentzhen-littlebit --
+network <port> (vectors | mnist <count>)` is the computer's side (`crates/littlebit/src/board.rs`):
+it sends each image as a frame, checks each answer's scores and digit against the golden model's,
+and reports the clocks the network counted.
 
 **Variant A and Variant B in Amaranth**
 
@@ -504,8 +510,9 @@ nextpnr reports:
 That is within Gate 2's 30,000 at 50 MHz, `trusted` with the toolchain (`fpga-toolchain`). The one
 DP16KD is the pixel FIFO. The Yosys log maps one memory to block RAM,
 `littlebit_network.network.pixels.storage`, so the weights stay logic. The bitstream's sha256 is
-754c51aef2aabe3598296aacbada86a962afd274002b39c0ab929c387d52047b. It hasn't been loaded: the
-network's first board run waits for Gate 2.
+754c51aef2aabe3598296aacbada86a962afd274002b39c0ab929c387d52047b. Rebuilt from main at 34dedf8,
+it came out the same, byte for byte, and that is the bitstream check 3 ran on (Verification,
+"Check 3 passes at r = 16").
 
 ## Verification
 
@@ -531,6 +538,21 @@ and the digit. Each image took 1,219 clocks. That is `tested`, by
 `littlebit_network_scores_mnist_test_images_as_the_golden_model_does`, which the Quality Gate runs
 on every commit. In the gate it takes 356 s of real time for the 10,000 images. With nextpnr's
 12,640 logic cells at 55.63 MHz (What the whole network costs), Gate 2 passes.
+
+**Check 3 passes at r = 16** (2026-11-23). On i9-2, at 50 MHz from the PLL, the whole network
+(`gateware/littlebit/network.py`) scored MNIST's first 1,000 test images exactly as the golden
+model does: every one of the 10 scores, and the digit. The network counted 1,219 clocks for every
+image. That is `measured`, `2026-11-23-i9-littlebit-network`, so Gate 3 passes:
+
+| | images | scored exactly as the golden model | lab log, 2026-11-23 |
+|---|---|---|---|
+| before the load (r16's first layer), the network's test vectors | 6 frames | none: the host command refused image 1's answer, which started 0x01 | seq 26 |
+| the network's test vectors for r16 | 6 | 6, 1,219 clocks each | seq 28 |
+| MNIST's first 1,000 test images, as MNIST stores them | 1,000 | 1,000, 1,219 clocks each, in 72.8 s | seq 29 |
+
+974 of the board's 1,000 digits are MNIST's labels. The golden model gets the same 974 by
+construction, since the scores are identical. Which bytes the host command read before the load
+is `unknown`: the layer design answers 1,281 bytes a frame, and the command reads 46.
 
 What each figure of a run rests on: its accuracy is computed on the host, so `tested` at best; its
 LUTs, EBR blocks and Fmax are nextpnr's, `trusted` with the toolchain (`trusted-base.toml`,
@@ -620,7 +642,8 @@ Phase 0 may run beside Phase 1: it needs only the board and the toolchain.
    model: r16's first layer, done (The board, "One layer on the board"). Gate 2 passed at r = 16
    on 2026-11-23 (Verification, "Check 2 passes at r = 16").
 4. **Phase 3, on the board.** Load E6 (r = 16, Variant A), run the host command, read the cycle
-   counts. **Gate 3:** check 3, 1,000 images identical to the golden model.
+   counts. **Gate 3:** check 3, 1,000 images identical to the golden model. Gate 3 passed at
+   r = 16 on 2026-11-23 (Verification, "Check 3 passes at r = 16").
 5. **Phase 4, experiments and write-up.** Run E1–E12, fill the results table, plot accuracy vs.
    bits per weight and LUTs vs. bits. **Gate 4:** the table is full, and both plots are made.
 6. **Phase 5, a chip's layout, with no chip made.** The largest hardwired LittleBit layer that fits
@@ -671,8 +694,11 @@ Gate 0's echo goes through the same DAPLink serial port as the bench's Phase 1 "
   test, then pass Gate 2 (`gateware/cores/littlebit.py`, `gateware/littlebit/network.py`,
   2026-11-23). The network scored all 10,000 test images exactly as the golden model, `tested` by
   `littlebit_network_scores_mnist_test_images_as_the_golden_model_does`. nextpnr reports 12,640
-  logic cells at 55.63 MHz. Next, Phase 3: the host command for the network's frames, then its
-  first board run.
+  logic cells at 55.63 MHz.
+- [x] Write the host command for the network's frames, then run the network on the board (Gate 3)
+  (`crates/littlebit/src/board.rs`, 2026-11-23): it scored 1,000 MNIST test images exactly as the
+  golden model, 1,219 clocks each, `measured`, `2026-11-23-i9-littlebit-network`. Next, Phase 4:
+  the experiments, E2 to E12.
 
 ## Experiments
 
@@ -687,7 +713,7 @@ Each cell fills as its run finishes, from the run's record or test.
 | E3 | binary dense, one scale per output | computer only | about 1.0 | | | | | | planned |
 | E4 | LittleBit r = 4 | A, hardwired | 0.062 | | | | | | planned |
 | E5 | LittleBit r = 8 | A, hardwired | 0.083 | | | | | | planned |
-| E6 | LittleBit r = 16 | A, hardwired | 0.125 | 97.17 (float 97.13) | 12,640 | 1 (the pixel FIFO) | 55.63 | | Gate 2 passed |
+| E6 | LittleBit r = 16 | A, hardwired | 0.125 | 97.17 (float 97.13) | 12,640 | 1 (the pixel FIFO) | 55.63 | 13.73 end to end; 1,219 clocks each, 41,017 at 50 MHz | Gate 3 passed |
 | E7 | LittleBit r = 32 | A, hardwired | 0.209 | | | | | | planned |
 | E8 | LittleBit r = 64 | A, hardwired | 0.376 | | | | | | planned |
 | E9 | LittleBit r = 16 | B, block RAM | 0.125 | | | | | | planned |
