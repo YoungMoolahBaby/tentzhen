@@ -6,7 +6,9 @@ the bar a hardwired policy would have to beat for running simulations with train
 
 Adapted from new-melting-pot's `sims/jaxtown/bench.py` (github.com/YoungMoolahBaby/new-melting-pot
 at 1f3cc3b, Apache-2.0), which times the game alone. For each number of games at once, and for each
-of two loads, it compiles a run of 1,000 steps ahead, runs it once to warm up, then times one run:
+of two loads, it compiles a run of 1,000 steps ahead, runs it once to warm up, then times it five
+times and reports the median, with the fastest and slowest beside it (one timing under WSL varies
+from run to run, new-melting-pot found):
 
 - random: the game alone, each agent's move drawn uniformly, as new-melting-pot times it;
 - policy: the game, with every agent's move drawn from SocialJax's trained policy, the network's
@@ -19,6 +21,7 @@ times, as new-melting-pot found.
 """
 
 import os
+import statistics
 import sys
 import time
 from pathlib import Path
@@ -34,6 +37,7 @@ import policy  # noqa: E402
 AGENTS = 7
 STEPS = 1000
 GAMES = (1, 16, 256, 1024)
+TIMINGS = 5
 
 
 def make_run(env, params, games, load):
@@ -80,18 +84,26 @@ def main(socialjax_folder, games):
             compiled = run.lower(jax.random.PRNGKey(0)).compile()
             compile_s = time.perf_counter() - start
             jax.block_until_ready(compiled(jax.random.PRNGKey(1)))
-            start = time.perf_counter()
-            reward, _ = jax.block_until_ready(compiled(jax.random.PRNGKey(2)))
-            seconds = time.perf_counter() - start
-            steps = n * STEPS / seconds
-            rows.append((n, load, steps))
-            print(f"{n:5d} games, {load:6s}: {seconds:8.2f} s, {steps:12,.0f} game steps/s, "
+            seconds, rewards = [], []
+            for t in range(TIMINGS):
+                start = time.perf_counter()
+                reward, _ = jax.block_until_ready(compiled(jax.random.PRNGKey(2 + t)))
+                seconds.append(time.perf_counter() - start)
+                rewards.append(float(reward) / n)
+            rates = sorted(n * STEPS / s for s in seconds)
+            steps, slowest, fastest = statistics.median(rates), rates[0], rates[-1]
+            rows.append((n, load, steps, slowest, fastest))
+            print(f"{n:5d} games, {load:6s}: {statistics.median(seconds):8.2f} s, "
+                  f"{steps:12,.0f} game steps/s ({slowest:,.0f} to {fastest:,.0f}), "
                   f"{AGENTS * steps:13,.0f} agent decisions/s (compile {compile_s:.1f} s, "
-                  f"return {float(reward) / n:.1f} a game)", flush=True)
-    print("\n| games at once | load | game steps a second | agent decisions a second |")
-    print("|---|---|---|---|")
-    for n, load, steps in rows:
-        print(f"| {n:,} | {load} | {steps:,.0f} | {AGENTS * steps:,.0f} |")
+                  f"return {statistics.mean(rewards):.1f} a game)", flush=True)
+    print(f"\nMedian of {TIMINGS} timings, with the slowest and fastest.\n")
+    print("| games at once | load | game steps a second | slowest to fastest "
+          "| agent decisions a second |")
+    print("|---|---|---|---|---|")
+    for n, load, steps, slowest, fastest in rows:
+        print(f"| {n:,} | {load} | {steps:,.0f} | {slowest:,.0f} to {fastest:,.0f} "
+              f"| {AGENTS * steps:,.0f} |")
 
 
 if __name__ == "__main__":
