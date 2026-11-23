@@ -12,6 +12,9 @@ Bytes before a 0xA5 are dropped. A frame that stops part way, nothing arriving f
 dropped too, and the engine reset with it, so the next 0xA5 starts afresh. The computer sends a
 frame only once the last one's answer is in.
 
+On i9-2 it answered 1,000 MNIST test images and the layer's 6 test vectors exactly as the golden
+model, every y and z (measured: lab/records/2026-11-23-i9-littlebit-layer.toml).
+
 This builds the bitstream and nothing more. Loading it is a flash, which a person approves in the
 session and the lab log records (lab/targets.toml), done by hand with openFPGALoader. From the
 repo root:
