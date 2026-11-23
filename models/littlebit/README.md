@@ -2,7 +2,7 @@
 
 Project #3's model training, in PyTorch (`docs/littlebit.md`, "Languages and layout"). E1, the
 FP32 baseline, came first. The LittleBit layer at r = 16 came next (`docs/littlebit.md`, "The
-first LittleBit run").
+first LittleBit run"), then the baselines E2 and E3 ("The baselines, E2 and E3").
 
 ## Running E1
 
@@ -39,6 +39,23 @@ weights, byte for byte (2026-11-22). `r16_scores_what_its_summary_says` re-score
 same `MNIST_DIR`. Where the recipe is silent, what the run chose is in `train_rank.py`'s docstring
 and in `docs/littlebit.md`, "The first LittleBit run".
 
+## Running the baselines
+
+`train_baseline.py` trains E2 and E3, the baselines between E1 and the LittleBit sweep. It takes
+E1's MLP with its two hidden layers' weights int8 (E2) or binary with one scale per output (E3),
+and fine-tunes it from `runs/e1` as `train_rank.py` does, with the same steps:
+
+    uv run --locked python train_baseline.py D:\tentzhen-data\mnist int8 runs\e2
+    uv run --locked python train_baseline.py D:\tentzhen-data\mnist binary runs\e3
+
+On the lab computer they took 24 s and 38 s. E2 got 9,835 of the 10,000 test images right in float
+(98.35 %), and E3 got 9,824 (98.24 %). Two runs of each gave the same weights, byte for byte
+(2026-11-23). `e2_scores_what_its_summary_says` and `e3_scores_what_its_summary_says` re-score
+them, with the same `MNIST_DIR`. Where they differ from r16's recipe is in `train_baseline.py`'s
+docstring and in `docs/littlebit.md`, "The baselines, E2 and E3". Moving the shared steps out of
+`train_rank.py` left r16's weights as they were: a run after the change gave the committed
+`weights.f32`, byte for byte.
+
 ## The integer export
 
 The hardware doesn't run float. The exporter turns a LittleBit run into integers: int8 scales,
@@ -53,6 +70,10 @@ images, 4 more than the float run's 9,713: check 1, `tested` by
 `r16_integer_is_within_half_a_point_of_float`. The Quality Gate re-runs the export and fails if
 the committed `integer.json` is not what it writes (`r16_integer_json_is_what_the_exporter_writes`).
 How each value is chosen is in `docs/littlebit.md`, "Fixed-point formats".
+
+Run on E2 or E3, the same command prints what the integer network gets right and writes no file:
+a baseline runs on the computer only, so no gateware reads its integers. E2 gets 9,833 right and
+E3 gets 9,824 (`e2_and_e3_integer_are_within_half_a_point_of_float`).
 
 ## Setting it up
 

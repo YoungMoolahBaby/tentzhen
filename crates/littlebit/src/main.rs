@@ -1,7 +1,9 @@
 //! `cargo run -p tentzhen-littlebit -- export <run-folder>`, from the repo root, writes the run's
 //! integer network to `<run-folder>/integer.json` (`tentzhen_littlebit::export`). It reads MNIST's
 //! training images from the folder MNIST_DIR names, checked against their pins, and then prints
-//! what the integer network gets right of the test images beside what the float run got.
+//! what the integer network gets right of the test images beside what the float run got. For a
+//! baseline, E2 or E3, it prints the same and writes nothing: nothing reads a baseline's integer
+//! network (`tentzhen_littlebit::export::baseline`).
 //!
 //! `cargo run -p tentzhen-littlebit -- vectors`, from the repo root, writes the gateware's test
 //! vectors (`tentzhen_littlebit::vectors`). They need no MNIST.
@@ -295,6 +297,31 @@ fn write_vectors() -> Result<String, String> {
 fn export(folder: &Path) -> Result<String, String> {
     let run = run::Run::load(folder)?;
     let (train, test) = mnist::load(Path::new("."), &mnist_dir()?)?;
+    if run.summary.quantized.is_some() {
+        let net = export::baseline(&run, &[0, 2], 4)?;
+        let predictions = net.predict(&test)?;
+        let mut report = format!(
+            "{}: a baseline runs on the computer only, so its integer network is not written\n",
+            folder.display()
+        );
+        for (j, l) in net.layers.iter().enumerate() {
+            report += &format!(
+                "  hidden layer {}: weights 2^{}, h {}, output shift {}\n",
+                j + 1,
+                l.weight_exponent,
+                l.h.as_ref()
+                    .map_or("none".into(), |h| format!("2^{}", h.exponent)),
+                l.output_shift
+            );
+        }
+        report += &format!(
+            "  output layer: weights 2^{}\n  test images right: integer {}, float {}\n",
+            net.output.weight_exponent,
+            predictions.correct(&test),
+            run.summary.test_correct
+        );
+        return Ok(report);
+    }
     let net = export::export(&run, &[0, 2], 4, &train)?;
     let out = folder.join(export::FILE);
     std::fs::write(&out, export::to_json(&net)).map_err(|e| format!("{}: {e}", out.display()))?;
