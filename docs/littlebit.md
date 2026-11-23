@@ -381,19 +381,30 @@ flowchart LR
 The two weight ROMs are what the experiments change. In Variant A they are logic constants
 generated from the trained weights; in Variant B the same bits sit in block RAM.
 
-**Per-layer schedule** (r = rank):
+**Per-layer schedule** (r = rank), as the engine runs it (`gateware/cores/littlebit.py`):
 
-1. Scale by g, then add or subtract by V: one input per clock for `in` clocks. Each clock reads one
-   row of V (r sign bits) and adds into, or subtracts from, r accumulators.
-2. Scale by ℓ, then add or subtract by U: one latent per clock for r clocks. Each clock reads one
-   row of U (`out` sign bits) and updates `out` accumulators at once.
-3. Scale by h, add the bias, ReLU, clamp to uint8: one output per clock through one multiplier,
-   written to the next layer's input buffer.
+1. Scale by g, then add or subtract by V: one input per clock for `in` clocks, and one more. Each
+   input's row of V (r sign bits) adds it into, or subtracts it from, r accumulators.
+2. Scale by ℓ: one latent per clock for r clocks, each shifted, saturated to int16 and kept.
+3. Add or subtract by U, scale by h, add the bias, ReLU, clamp to uint8: one output per clock for
+   `out` clocks. Each clock reads one row of U (r sign bits) and sums the r latents by it in one
+   adder tree, then one multiplier scales the sum.
 
-**Clocks per image.** Counting that schedule for one image, start to finish: layer 1 takes
-784 + r + 256 clocks, layer 2 256 + r + 128, and the output layer 128, so 1,552 + 2r; at r = 16 that
-is 1,584 clocks, 31.7 µs at 50 MHz. The spec estimated 1,550 + 4r. The on-chip cycle counter gives
-the real figure, `unknown` until it does.
+The plan first had stage 2 read U's columns and update `out` accumulators at once. Synthesized for
+r16's first layer, those 256 accumulators came to 18,778 LUT4s and 3,106 carry cells (Yosys, OSS
+CAD Suite 2026-11-21, 2026-11-23): more than both layers' budget. Summing each output's r latents
+in stage 3 instead brought the layer to 5,973 of nextpnr's logic cells. Each stage also keeps its
+values for a clock between reading a ROM and the arithmetic after it. Without those registers,
+nextpnr's first routes of the two layers reached 40.72 and 44.80 MHz, short of 50.
+
+**Clocks per image.** The engine takes in + r + out + 1 clocks a vector, and its last output comes
+2 clocks after that. With inputs back to back, that is `tested`: 1,057 clocks for r16's layer 1
+and 401 for its layer 2 (`littlebit_engine_computes_r16_layer_1_as_the_golden_model_does`,
+`littlebit_engine_computes_r16_layer_2_as_the_golden_model_does`). With the output layer's 128,
+the layers take 1,554 + 2r clocks one after another, 1,586 at r = 16, 31.7 µs at 50 MHz. The top
+level may overlap them, since layer 1 hands out an output a clock, as layer 2 takes its inputs. The
+spec estimated 1,550 + 4r. The on-chip cycle counter gives the real figure, `unknown` until it
+does.
 
 **The serial link sets the pace.** At 115,200 baud and 10 bits a byte (8N1, assumed), the 785-byte
 request takes 68.1 ms and the 46-byte reply 4.0 ms: at most 13.9 images a second, however fast the
@@ -415,16 +426,29 @@ does not have yet.
 
 **Variant A and Variant B in Amaranth**
 
-- **A, hardwired:** the generator writes each ROM as a `Switch` over the row index with a constant
-  on each `Case`. Yosys turns it into LUT logic, so the weights become part of the circuit.
+- **A, hardwired:** the generator, `ROM` in `gateware/cores/littlebit.py`, builds each ROM as a
+  tree of 2:1 multiplexers on the constant rows, one level per bit of the row index. Yosys turns it
+  into LUT logic, so the weights become part of the circuit. The plan had a `Switch` over the row
+  index with a constant on each `Case`. But Yosys's `proc_rom` pass turns such a `Switch` into a
+  memory, and once the engine registered a ROM's output, `synth_ecp5` put layer 1's ROMs in 4
+  DP16KD blocks of block RAM: Variant B, not A. A tree of multiplexers is no `Switch`, and gave no
+  block RAM.
 - **B, stored:** the same bits are the initial contents of an Amaranth memory, which Yosys maps to
-  block RAM. The synthesis log shows whether it landed in EBR.
+  block RAM. The synthesis log shows whether it landed in EBR. Not written yet.
 
-Both are `unknown` until Phase 2's synthesis reports show them.
+**What the engines cost.** nextpnr's report for each of r16's two engines alone, at 50 MHz
+(OSS CAD Suite 2026-11-21, seed 1; `python -m gateware.cores.littlebit` writes one as Verilog,
+2026-11-23):
 
-Accumulators are 32-bit in the V stages and about 22-bit in the U stages (r terms of int16). For
-r = 16 the spec estimates layer 1's U-stage accumulators as the largest block, a few thousand LUTs,
-and the hardwired ROMs at about 1,000–1,500 LUTs. Estimates, `unknown` until nextpnr reports them.
+| r16 | logic cells (TRELLIS_COMB) | flip-flops | 18 × 18 multipliers | block RAM | Fmax after routing |
+|---|---|---|---|---|---|
+| layer 1, 784 → 256 | 5,973 | 1,093 | 5 | 0 | 58.64 MHz |
+| layer 2, 256 → 128 | 4,236 | 1,055 | 5 | 0 | 60.12 MHz |
+
+Those are the toolchain's figures, `trusted` with it (`trusted-base.toml`, `fpga-toolchain`), and
+the engines alone, with no UART, output layer or top level. Together they take 10,209 of the
+30,000 cells Gate 2 allows. The spec estimated layer 1's U-stage accumulators at a few thousand
+LUTs, and the hardwired ROMs at about 1,000–1,500.
 
 ## Verification
 
@@ -458,15 +482,30 @@ inside the bitstream.
   unless the gateware rounds too.
 - It reads the same exported JSON the ROM generator reads.
 - It gives every intermediate vector for one image, after g, V, ℓ, U and h (`integer::Trace`), to
-  find a mismatch layer by layer. Writing them out for the cocotb tests comes with those tests.
+  find a mismatch layer by layer. It writes them out for the cocotb tests:
+  `cargo run -p tentzhen-littlebit -- vectors` writes `gateware/cores/tests/littlebit_vectors.json`
+  (`crates/littlebit/src/vectors.rs`), and `littlebit_vectors_are_what_the_golden_model_writes`
+  fails if the committed file is not what it writes. No MNIST image is in them, since MNIST's files
+  are never committed: the inputs are drawn from a fixed seed.
+- For a convolution, it takes the window around each position of the grid, with zeros past the
+  edge, as Flax's default "same" padding does (`integer::windows`; `tested` by
+  `windows_take_each_position_s_patch_with_zeros_past_the_edge`).
 
 **cocotb tests**
 
 - Unit tests per block: UART loopback, one accumulator bank, one weight-ROM read against its
   exported column. The UART's are written (`gateware/cores/tests/test_uart.py`), with one of the
-  board's echo design (`gateware/bringup/tests/test_uart_echo.py`); `docs/architecture.md`, "Rules",
-  lists them.
-- A layer test: one LittleBit layer alone against the golden model, on random uint8 vectors.
+  board's echo design (`gateware/bringup/tests/test_uart_echo.py`). So is the ROM read, of r16
+  layer 1's V and U (`littlebit_sign_roms_read_back_r16_layer_1s_v_rows_and_u_columns`). The
+  accumulator bank has no test of its own: the layer tests check its sums through every output.
+  `docs/architecture.md`, "Rules", lists them.
+- A layer test: one LittleBit layer alone against the golden model. Written
+  (`gateware/cores/tests/test_littlebit.py`), on r16's two hidden layers, each given all zeros, all
+  at the top of its range, and 4 random vectors, back to back. It also runs on a small convolution:
+  a made-up 3 × 3 layer from 2 channels to 4 at rank 3, given the 25 windows of a 5 × 5 grid with
+  gaps between inputs. Every output's y and z must be the golden model's, and every case
+  saturates some latents and clamps some outputs at each end. The engine takes the windows as the
+  golden model builds them; gateware that builds them from a grid is not written yet.
 - A full-network test: 100 images on every commit, all 10,000 before any board run.
 - Waveforms (FST) kept only for failing tests.
 
@@ -547,8 +586,10 @@ Gate 0's echo goes through the same DAPLink serial port as the bench's Phase 1 "
   model's 97.13 %, `tested` by `r16_integer_is_within_half_a_point_of_float`.
 - [x] Run Gate 0's echo and blinky at 50 MHz from the PLL (`gateware/bringup/pll_echo.py`,
   2026-11-23): `measured`, `2026-11-23-i9-pll-echo`.
-- [ ] Write the layer engine and the weight-ROM generator, and test them against the golden model in
-  cocotb, a small convolution among the tests.
+- [x] Write the layer engine and the weight-ROM generator, and test them against the golden model in
+  cocotb, a small convolution among the tests (`gateware/cores/littlebit.py`, 2026-11-23):
+  `tested` by the layer tests above. Next for Gate 2: the output layer, the top level and the
+  full-network test.
 - [ ] Run one layer from the engine on the board, ahead of Gate 2.
 
 ## Experiments

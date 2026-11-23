@@ -5,7 +5,8 @@
 //! gateware's will; nothing rounds to nearest.
 //!
 //! The layer is a matrix applied to one vector. An MLP layer applies it to one vector per image;
-//! a convolution will apply it to each window of its grid (docs/littlebit.md, "After MNIST").
+//! a convolution applies it to each window of its grid, [`windows`] (docs/littlebit.md, "After
+//! MNIST").
 
 use crate::mnist::Images;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -206,6 +207,52 @@ impl LittleBitLayer {
             saturated,
         })
     }
+}
+
+/// The vectors a convolution applies its layer to, one for each position of a grid `height` x
+/// `width` of `channels`-deep uint8 values, stored row by row and a position's channels together:
+/// the `kernel` x `kernel` patch centred there, flattened row by row and then by channel, with 0
+/// wherever the patch runs past the grid's edge. That is Flax's default, a stride of 1 and "same"
+/// padding (docs/littlebit.md, "After MNIST"), for an odd kernel. The windows come in the grid's
+/// order, so a layer's output for window j is the output grid's position j.
+pub fn windows(
+    grid: &[u8],
+    height: usize,
+    width: usize,
+    channels: usize,
+    kernel: usize,
+) -> Result<Vec<Vec<u8>>, String> {
+    if grid.len() != height * width * channels {
+        return Err(format!(
+            "a grid of {} values is not {height} x {width} x {channels}",
+            grid.len()
+        ));
+    }
+    if kernel.is_multiple_of(2) {
+        return Err(format!("a kernel of {kernel} has no centre"));
+    }
+    let half = kernel / 2;
+    let mut out = Vec::with_capacity(height * width);
+    for row in 0..height {
+        for col in 0..width {
+            let mut window = Vec::with_capacity(kernel * kernel * channels);
+            for dr in 0..kernel {
+                for dc in 0..kernel {
+                    // The patch's row and column in the grid, if it is in the grid.
+                    let r = (row + dr).checked_sub(half).filter(|&r| r < height);
+                    let c = (col + dc).checked_sub(half).filter(|&c| c < width);
+                    for ch in 0..channels {
+                        window.push(match (r, c) {
+                            (Some(r), Some(c)) => grid[(r * width + c) * channels + ch],
+                            _ => 0,
+                        });
+                    }
+                }
+            }
+            out.push(window);
+        }
+    }
+    Ok(out)
 }
 
 impl DenseLayer {
