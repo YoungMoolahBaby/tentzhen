@@ -2,12 +2,14 @@
 //! allow ([`mnist`]); a training run's committed weights, dense or LittleBit, re-scored here in f32
 //! ([`run`]); the exporter, which makes a LittleBit run an integer network ([`export`]); the integer
 //! golden model that runs it ([`integer`]); the test vectors it writes for the gateware
-//! ([`vectors`]); and the computer's side of a layer on the board, checked against it ([`board`]).
+//! ([`vectors`]); the computer's side of a layer on the board, checked against it ([`board`]); and
+//! Gate 4's two plots, drawn from the experiments table ([`plots`]).
 
 pub mod board;
 pub mod export;
 pub mod integer;
 pub mod mnist;
+pub mod plots;
 pub mod run;
 pub mod vectors;
 
@@ -1148,5 +1150,74 @@ mod tests {
         assert_eq!(t.saturated, 0, "latents saturated on the training images");
         let got = (integer, float, same, t.correct(&train), p.saturated);
         assert_eq!(got, (9_546, 9_555, 9_976, 57_803, 0));
+    }
+
+    /// Gate 4's two plots, under docs/img/, are what `plots` draws from docs/littlebit.md's
+    /// experiments table.
+    #[test]
+    fn the_plots_are_what_the_experiments_table_draws() {
+        let doc = fs::read_to_string(root().join(plots::DOC)).unwrap();
+        let rows = plots::experiments(&doc).unwrap();
+        for (file, svg) in [
+            (plots::ACCURACY, plots::accuracy(&rows).unwrap()),
+            (plots::CELLS, plots::cells(&rows).unwrap()),
+        ] {
+            let committed = fs::read_to_string(root().join(file)).unwrap();
+            assert!(
+                committed == svg,
+                "{file} is stale: run `cargo run -p tentzhen-littlebit -- plots`"
+            );
+        }
+    }
+
+    /// The experiments table's test accuracies, which the accuracy plot draws, are what the runs
+    /// get on MNIST's 10,000 test images: each run's integer network as the golden model scores
+    /// it, then in brackets its float run's, from its summary, which the tests above re-score.
+    /// E1's is its float run's alone. E9 and E12 are E6's network, r16, in other builds.
+    #[test]
+    fn the_experiments_table_s_accuracies_are_what_the_runs_get() {
+        let doc = fs::read_to_string(root().join(plots::DOC)).unwrap();
+        let rows = plots::experiments(&doc).unwrap();
+        let (_, test) = mnist::load(&root(), &mnist_dir()).unwrap();
+        let runs = root().join("models/littlebit/runs");
+        let folders = [
+            ("E1", "e1"),
+            ("E2", "e2"),
+            ("E3", "e3"),
+            ("E4", "r4"),
+            ("E5", "r8"),
+            ("E6", "r16"),
+            ("E7", "r32"),
+            ("E8", "r64"),
+            ("E9", "r16"),
+            ("E10", "e10"),
+            ("E11", "r42"),
+            ("E12", "r16"),
+        ];
+        let names: Vec<&str> = rows.iter().map(|e| e.run.as_str()).collect();
+        assert_eq!(names, folders.map(|(run, _)| run));
+        let percent = |n: usize| format!("{:.2}", n as f64 / 100.0);
+        for (row, (name, folder)) in rows.iter().zip(folders) {
+            let run = run::Run::load(&runs.join(folder)).unwrap();
+            let float = percent(run.summary.test_correct);
+            let want = if name == "E1" {
+                format!("{float} (float)")
+            } else {
+                let integer = if run.summary.quantized.is_some() {
+                    let net = export::baseline(&run, &[0, 2], 4).unwrap();
+                    net.predict(&test).unwrap().correct(&test)
+                } else {
+                    let text = fs::read_to_string(runs.join(folder).join(export::FILE)).unwrap();
+                    let net = integer::Network::parse(&text).unwrap();
+                    net.predict(&test).unwrap().correct(&test)
+                };
+                format!("{} (float {float})", percent(integer))
+            };
+            assert!(
+                row.accuracy_cell.starts_with(&want),
+                "{name}: the table has {:?}, the runs give {want:?}",
+                row.accuracy_cell
+            );
+        }
     }
 }
