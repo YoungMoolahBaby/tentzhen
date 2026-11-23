@@ -136,6 +136,28 @@ outside `ecppll`'s ranges is `tested` (`gateware/cores/tests/test_ecp5_pll.py`).
 50 MHz and its divisor, 434, in cocotb without the PLL, which Verilator has no model of
 (`uart_echo_at_50_mhz_sends_back_every_byte_at_115200_baud`).
 
+**One layer on the board.** r16's first layer, 784 → 256 at rank 16, ran on i9-2 on the layer
+engine at 50 MHz from the PLL (`gateware/bringup/littlebit_layer.py`, 2026-11-23). It answered every
+input exactly as the golden model computes it: every y, and every z, the int32 before the shift and
+clamp, of all 256 outputs. That is `measured`, `2026-11-23-i9-littlebit-layer`:
+
+| | inputs | answered exactly as the golden model | lab log, 2026-11-23 |
+|---|---|---|---|
+| before the load (the PLL echo) | 1 frame | none: it came back as an echo | seq 21, 22 |
+| the test vectors for the layer | 6 | 6 | seq 24 |
+| MNIST's first 1,000 test images, shifted as the network shifts them | 1,000 | 1,000, in 180.0 s | seq 25 |
+
+The computer sends a frame, 0xA5 and the layer's 784 input bytes. The design answers 0x5A and, for
+each output, y and z, 1,281 bytes: 180 ms an input at 115,200 baud, the serial link's time, not the
+engine's. A frame left part way is dropped after 100 ms of silence. `cargo run -p
+tentzhen-littlebit -- layer <port> (vectors | mnist <count>)` is the computer's side
+(`crates/littlebit/src/board.rs`). In cocotb, without the PLL and at a UART divisor of 8, the same
+design answers two frames as the golden model does and drops a part one
+(`gateware/bringup/tests/test_littlebit_layer.py`). Built, it takes 6,422 of nextpnr's logic cells,
+2 DP16KD blocks for the outputs' FIFO, and closes at 55.99 MHz; the weights stay logic, as the
+Yosys log shows (`littlebit_layer.layer.fifo.storage` is the only memory it maps to block RAM).
+This is one layer, not check 3, which takes the whole network's scores and digit.
+
 **Load with one board on USB.** openFPGALoader 1.2.0 can't choose between two identical CMSIS-DAP
 v1 probes:
 
@@ -543,7 +565,7 @@ Phase 0 may run beside Phase 1: it needs only the board and the toolchain.
    30,000 LUTs at 50 MHz in nextpnr's report. The network's first board run waits for this gate.
    Two smaller board runs come before it, by Jon's choice (2026-11-22). The first is the PLL at
    50 MHz, done (The board). The second is one layer from the engine, checked against the golden
-   model, done once the engine passes in simulation.
+   model: r16's first layer, done (The board, "One layer on the board").
 4. **Phase 3, on the board.** Load E6 (r = 16, Variant A), run the host command, read the cycle
    counts. **Gate 3:** check 3, 1,000 images identical to the golden model.
 5. **Phase 4, experiments and write-up.** Run E1–E12, fill the results table, plot accuracy vs.
@@ -590,7 +612,9 @@ Gate 0's echo goes through the same DAPLink serial port as the bench's Phase 1 "
   cocotb, a small convolution among the tests (`gateware/cores/littlebit.py`, 2026-11-23):
   `tested` by the layer tests above. Next for Gate 2: the output layer, the top level and the
   full-network test.
-- [ ] Run one layer from the engine on the board, ahead of Gate 2.
+- [x] Run one layer from the engine on the board, ahead of Gate 2
+  (`gateware/bringup/littlebit_layer.py`, 2026-11-23): r16's first layer answered 1,000 MNIST test
+  images exactly as the golden model, `measured`, `2026-11-23-i9-littlebit-layer`.
 
 ## Experiments
 

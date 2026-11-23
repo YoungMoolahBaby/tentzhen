@@ -5,10 +5,109 @@
 //!
 //! `cargo run -p tentzhen-littlebit -- vectors`, from the repo root, writes the gateware's test
 //! vectors (`tentzhen_littlebit::vectors`). They need no MNIST.
+//!
+//! `cargo run -p tentzhen-littlebit -- layer <port> vectors`, or `... layer <port> mnist <count>`,
+//! from the repo root, sends r16's first layer on the board (`gateware/bringup/littlebit_layer.py`)
+//! its inputs over the serial port `<port>` at 115,200 baud, a frame at a time, and checks each
+//! answer against the golden model (`tentzhen_littlebit::board`). The inputs are the gateware's
+//! test vectors for that layer, or the first `<count>` MNIST test images, each pixel shifted right
+//! by the network's pixel shift, from the folder MNIST_DIR names. It talks to the board; loading
+//! the board is a flash, done by hand.
 
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use tentzhen_littlebit::{export, integer, mnist, run, vectors};
+use std::time::{Duration, Instant};
+use tentzhen_littlebit::{board, export, integer, mnist, run, vectors};
+
+fn mnist_dir() -> Result<PathBuf, String> {
+    std::env::var_os("MNIST_DIR")
+        .map(PathBuf::from)
+        .ok_or_else(|| "MNIST_DIR names the folder MNIST is fetched into".into())
+}
+
+fn layer(port: &str, source: &[String]) -> Result<String, String> {
+    let text =
+        std::fs::read_to_string(vectors::R16).map_err(|e| format!("{}: {e}", vectors::R16))?;
+    let net = integer::Network::parse(&text)?;
+    let layer = &net.layers[0];
+    let inputs: Vec<Vec<u8>> = match source {
+        [s] if s == "vectors" => {
+            let text = std::fs::read_to_string(vectors::FILE)
+                .map_err(|e| format!("{}: {e}", vectors::FILE))?;
+            let v: vectors::Vectors =
+                serde_json::from_str(&text).map_err(|e| format!("{}: {e}", vectors::FILE))?;
+            let case = v
+                .cases
+                .into_iter()
+                .find(|c| c.name == "r16-layer-1")
+                .ok_or("the vectors have no case r16-layer-1")?;
+            case.inputs
+        }
+        [s, count] if s == "mnist" => {
+            let count: usize = count.parse().map_err(|e| format!("count {count}: {e}"))?;
+            let (_, test) = mnist::load(Path::new("."), &mnist_dir()?)?;
+            if count > test.len() {
+                return Err(format!("{count} images, of the {} there are", test.len()));
+            }
+            (0..count)
+                .map(|k| {
+                    test.image(k)
+                        .iter()
+                        .map(|&p| p >> net.pixel_shift)
+                        .collect()
+                })
+                .collect()
+        }
+        _ => return Err(USAGE.into()),
+    };
+    let mut serial = serialport::new(port, 115_200)
+        .timeout(Duration::from_secs(2))
+        .open()
+        .map_err(|e| format!("{port}: {e}"))?;
+    let (mut sent, mut received) = (Vec::new(), Vec::new());
+    let mut differences = Vec::new();
+    let start = Instant::now();
+    for (k, x) in inputs.iter().enumerate() {
+        let frame = board::frame(x);
+        let mut answer = vec![0; board::answer_len(layer.outputs)];
+        serial
+            .clear(serialport::ClearBuffer::Input)
+            .and_then(|()| Ok(serial.write_all(&frame)?))
+            .and_then(|()| Ok(serial.read_exact(&mut answer)?))
+            .map_err(|e| format!("input {k}: {e}"))?;
+        let outputs =
+            board::parse_answer(&answer, layer.outputs).map_err(|e| format!("input {k}: {e}"))?;
+        if let Some(d) = board::difference(&outputs, &layer.trace(x)?) {
+            differences.push(format!("input {k}: {d}"));
+        }
+        sent.extend_from_slice(&frame);
+        received.extend_from_slice(&answer);
+    }
+    let mut report = format!(
+        "{port}: {} inputs; {} answered exactly as the golden model, every y and z; {} not; in \
+         {:.1} s\n  sent {} bytes, sha256 {}\n  received {} bytes, sha256 {}\n",
+        inputs.len(),
+        inputs.len() - differences.len(),
+        differences.len(),
+        start.elapsed().as_secs_f64(),
+        sent.len(),
+        mnist::sha256_hex(&sent),
+        received.len(),
+        mnist::sha256_hex(&received),
+    );
+    for d in differences.iter().take(10) {
+        report += &format!("  {d}\n");
+    }
+    if differences.is_empty() {
+        Ok(report)
+    } else {
+        Err(report)
+    }
+}
+
+const USAGE: &str = "usage: tentzhen-littlebit export <run-folder> | vectors | \
+                     layer <port> (vectors | mnist <count>)";
 
 fn write_vectors() -> Result<String, String> {
     let text =
@@ -31,11 +130,8 @@ fn write_vectors() -> Result<String, String> {
 }
 
 fn export(folder: &Path) -> Result<String, String> {
-    let mnist_dir = std::env::var_os("MNIST_DIR")
-        .map(PathBuf::from)
-        .ok_or("MNIST_DIR names the folder MNIST is fetched into")?;
     let run = run::Run::load(folder)?;
-    let (train, test) = mnist::load(Path::new("."), &mnist_dir)?;
+    let (train, test) = mnist::load(Path::new("."), &mnist_dir()?)?;
     let net = export::export(&run, &[0, 2], 4, &train)?;
     let out = folder.join(export::FILE);
     std::fs::write(&out, export::to_json(&net)).map_err(|e| format!("{}: {e}", out.display()))?;
@@ -66,7 +162,8 @@ fn main() -> ExitCode {
     let result = match args.as_slice() {
         [command, folder] if command == "export" => export(Path::new(folder)),
         [command] if command == "vectors" => write_vectors(),
-        _ => Err("usage: tentzhen-littlebit export <run-folder> | vectors".into()),
+        [command, port, source @ ..] if command == "layer" => layer(port, source),
+        _ => Err(USAGE.into()),
     };
     match result {
         Ok(report) => {
