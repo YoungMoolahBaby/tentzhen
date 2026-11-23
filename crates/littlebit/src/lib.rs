@@ -640,7 +640,8 @@ mod tests {
     /// 0, some to 255, and some falls between.
     #[test]
     fn littlebit_vectors_are_what_the_golden_model_writes() {
-        let v = vectors::vectors(&r16_integer()).unwrap();
+        let (r16, sweep) = vectors::networks(&root()).unwrap();
+        let v = vectors::vectors(&r16, &sweep).unwrap();
         let committed = fs::read_to_string(root().join(vectors::FILE)).unwrap();
         assert!(
             committed == vectors::to_json(&v),
@@ -680,13 +681,24 @@ mod tests {
         assert_eq!(integer::argmax(&[i32::MIN, i32::MIN, i32::MAX]), 2);
     }
 
-    /// The output layer's and the whole network's test vectors: each input's scores and digit are
+    /// The output layer's and the whole networks' test vectors: each input's scores and digit are
     /// the golden model's, and the made-up output layer's scores reach both ends of an int32 and
-    /// tie, the first of the highest picked over a later one.
+    /// tie, the first of the highest picked over a later one. The sweep's networks, r4, r8, r32
+    /// and r64, each have a case on r16's images.
     #[test]
     fn output_and_network_vectors_are_what_the_golden_model_computes() {
-        let net = r16_integer();
-        let v = vectors::vectors(&net).unwrap();
+        let (net, sweep) = vectors::networks(&root()).unwrap();
+        let v = vectors::vectors(&net, &sweep).unwrap();
+        let names: Vec<&str> = v.network_cases.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["r16", "r4", "r8", "r32", "r64"]);
+        for (case, other) in v.network_cases[1..].iter().zip(&sweep) {
+            assert_eq!(case.images, v.network_cases[0].images, "{}", case.name);
+            for ((image, scores), &digit) in case.images.iter().zip(&case.scores).zip(&case.digits)
+            {
+                assert_eq!(&other.scores(image).unwrap().0, scores, "{}", case.name);
+                assert_eq!(digit, integer::argmax(scores), "{}", case.name);
+            }
+        }
         let names: Vec<&str> = v.dense_cases.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["r16-output", "dense-extremes"]);
         for case in &v.dense_cases {
@@ -824,5 +836,150 @@ mod tests {
             .filter(|(f, i)| f == i)
             .count();
         assert_eq!(same, 9_980);
+    }
+
+    /// The rank sweep's other runs, E4, E5, E7 and E8 (docs/littlebit.md, "Experiments").
+    const SWEEP: [usize; 4] = [4, 8, 32, 64];
+
+    fn rank(r: usize) -> PathBuf {
+        root().join(format!("models/littlebit/runs/r{r}"))
+    }
+
+    /// Each of the sweep's committed runs is the one its summary names, in the shapes of the
+    /// LittleBit MLP at its rank, as r16's is; each started from E1's committed weights, trained
+    /// on the MNIST the pins name.
+    #[test]
+    fn the_sweep_s_weights_are_the_ones_their_summaries_name() {
+        let e1 = run::Run::load(&e1()).unwrap();
+        let pins = mnist::Pins::load(&root()).unwrap().sha256;
+        for r in SWEEP {
+            let run = run::Run::load(&rank(r)).unwrap();
+            let s = &run.summary;
+            let shapes: Vec<(&str, Vec<usize>)> = s
+                .layout
+                .iter()
+                .map(|t| (t.name.as_str(), t.shape.clone()))
+                .collect();
+            let want: Vec<(&str, Vec<usize>)> = vec![
+                ("0.g", vec![784]),
+                ("0.v", vec![784, r]),
+                ("0.l", vec![r]),
+                ("0.u", vec![256, r]),
+                ("0.h", vec![256]),
+                ("0.bias", vec![256]),
+                ("2.g", vec![256]),
+                ("2.v", vec![256, r]),
+                ("2.l", vec![r]),
+                ("2.u", vec![128, r]),
+                ("2.h", vec![128]),
+                ("2.bias", vec![128]),
+                ("4.weight", vec![10, 128]),
+                ("4.bias", vec![10]),
+            ];
+            assert_eq!(shapes, want, "r{r}");
+            // Each layer's g (one per input), h and bias (one per output), V, U and l (r each per
+            // input, per output and once), then the output layer: 3,098 + 1,426 r, r16's 25,914.
+            let parameters =
+                784 + 2 * 256 + 256 + 2 * 128 + r * (784 + 256 + 1 + 256 + 128 + 1) + 10 * 128 + 10;
+            assert_eq!(
+                (s.run.clone(), s.weights, s.parameters),
+                (format!("r{r}"), 234_752, parameters)
+            );
+            let lb = s.littlebit.as_ref().unwrap();
+            assert_eq!(lb.rank, r);
+            assert_eq!(lb.start.run, e1.summary.run);
+            assert_eq!(lb.start.weights_sha256, e1.summary.weights_sha256);
+            assert_eq!(s.mnist_sha256, pins, "r{r}");
+        }
+    }
+
+    /// Each of the sweep's runs, re-scored here from its committed weights in f32, gets right the
+    /// test and training images its summary says: 8,802 and 52,869 at r = 4, 9,464 and 57,036 at
+    /// r = 8, 9,772 and 59,602 at r = 32, and 9,814 and 59,887 at r = 64.
+    #[test]
+    fn the_sweep_scores_what_its_summaries_say() {
+        let (train, test) = mnist::load(&root(), &mnist_dir()).unwrap();
+        let mut got = Vec::new();
+        for r in SWEEP {
+            let run = run::Run::load(&rank(r)).unwrap();
+            let s = &run.summary;
+            assert_eq!(
+                run.correct(&[0, 2, 4], &test).unwrap(),
+                s.test_correct,
+                "r{r}"
+            );
+            assert_eq!(
+                run.correct(&[0, 2, 4], &train).unwrap(),
+                s.train_correct,
+                "r{r}"
+            );
+            got.push((r, s.test_correct, s.train_correct));
+        }
+        let want = [
+            (4, 8_802, 52_869),
+            (8, 9_464, 57_036),
+            (32, 9_772, 59_602),
+            (64, 9_814, 59_887),
+        ];
+        assert_eq!(got, want);
+    }
+
+    /// Each of the sweep's integer.json files is what the exporter writes from its committed
+    /// weights and the 60,000 training images.
+    #[test]
+    fn the_sweep_s_integer_json_is_what_the_exporter_writes() {
+        let (train, _) = mnist::load(&root(), &mnist_dir()).unwrap();
+        for r in SWEEP {
+            let run = run::Run::load(&rank(r)).unwrap();
+            let net = export::export(&run, &[0, 2], 4, &train).unwrap();
+            assert_eq!(net.weights_sha256, run.summary.weights_sha256);
+            let committed = fs::read_to_string(rank(r).join(export::FILE)).unwrap();
+            assert!(
+                committed == export::to_json(&net),
+                "runs/r{r}/{} is stale: run `cargo run -p tentzhen-littlebit -- export \
+                 models/littlebit/runs/r{r}`",
+                export::FILE
+            );
+        }
+    }
+
+    /// Check 1 across the sweep: at each rank the integer golden model gets at most 0.5 points
+    /// fewer of the 10,000 test images right than the float run, and on the training images, which
+    /// chose its latent shifts, it saturates no latent. The counts, at r = 4, 8, 32 and 64: integer
+    /// test 8,791, 9,463, 9,776 and 9,815, against float 8,802, 9,464, 9,772 and 9,814; the same
+    /// digit as float on 9,932, 9,974, 9,993 and 9,993 test images; integer training images right
+    /// 52,850, 57,018, 59,597 and 59,886; and one latent saturated on the test images at r = 4,
+    /// none at the others.
+    #[test]
+    fn the_sweep_s_integer_is_within_half_a_point_of_float() {
+        let (train, test) = mnist::load(&root(), &mnist_dir()).unwrap();
+        let mut got = Vec::new();
+        for r in SWEEP {
+            let run = run::Run::load(&rank(r)).unwrap();
+            let text = fs::read_to_string(rank(r).join(export::FILE)).unwrap();
+            let net = integer::Network::parse(&text).unwrap();
+            let p = net.predict(&test).unwrap();
+            let (integer, float) = (p.correct(&test), run.summary.test_correct);
+            assert!(integer + 50 >= float, "r{r}: {integer} against {float}");
+            let float_digits = run.predict(&[0, 2, 4], &test).unwrap();
+            let same = float_digits
+                .iter()
+                .zip(&p.digits)
+                .filter(|(f, i)| f == i)
+                .count();
+            let t = net.predict(&train).unwrap();
+            assert_eq!(
+                t.saturated, 0,
+                "r{r}: latents saturated on the training images"
+            );
+            got.push((r, integer, float, same, t.correct(&train), p.saturated));
+        }
+        let want = [
+            (4, 8_791, 8_802, 9_932, 52_850, 1),
+            (8, 9_463, 9_464, 9_974, 57_018, 0),
+            (32, 9_776, 9_772, 9_993, 59_597, 0),
+            (64, 9_815, 9_814, 9_993, 59_886, 0),
+        ];
+        assert_eq!(got, want);
     }
 }

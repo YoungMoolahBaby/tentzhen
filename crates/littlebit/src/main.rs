@@ -259,10 +259,8 @@ fn write_mnist_vectors(count: &str, file: &Path) -> Result<String, String> {
 }
 
 fn write_vectors() -> Result<String, String> {
-    let text =
-        std::fs::read_to_string(vectors::R16).map_err(|e| format!("{}: {e}", vectors::R16))?;
-    let r16 = integer::Network::parse(&text)?;
-    let v = vectors::vectors(&r16)?;
+    let (r16, sweep) = vectors::networks(Path::new("."))?;
+    let v = vectors::vectors(&r16, &sweep)?;
     std::fs::write(vectors::FILE, vectors::to_json(&v))
         .map_err(|e| format!("{}: {e}", vectors::FILE))?;
     let mut report = format!("wrote {}\n", vectors::FILE);
