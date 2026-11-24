@@ -15,15 +15,20 @@ from run to run, new-melting-pot found):
   forward pass for all 7 agents of every game each step.
 
 A game step is all 7 agents acting once, so one game step is 7 agent decisions. Each run keeps a sum
-of the rewards and of the observations, so that the compiler can't skip computing them. Run on the
-GPU, nothing else may use it: two JAX processes sharing one under WSL slow each other about 30
-times, as new-melting-pot found.
+of the rewards and of the observations, so that the compiler can't skip computing them. On an
+NVIDIA GPU it also reads the board's power draw while it times (`Power`), for the energy a game
+step takes. Run on the GPU, nothing else may use it: two JAX processes sharing one under WSL slow
+each other about 30 times, as new-melting-pot found.
 """
 
 import os
+import shutil
 import statistics
+import subprocess
 import sys
+import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
@@ -38,6 +43,44 @@ AGENTS = 7
 STEPS = 1000
 GAMES = (1, 16, 256, 1024)
 TIMINGS = 5
+IDLE_S = 3
+
+
+class Power:
+    """The GPU board's power draw while the benchmark runs, read every 100 ms: nvidia-smi's
+    `power.draw.instant` and `power.draw.average` (over the last second), each of which its own
+    help gives as accurate to within 5 W. It is the board alone, not the rest of the computer."""
+
+    def __init__(self):
+        self.log = tempfile.TemporaryFile(mode="w+")
+        self.process = subprocess.Popen(
+            ["nvidia-smi", "--query-gpu=timestamp,power.draw.instant,power.draw.average",
+             "--format=csv,noheader,nounits", "-lms", "100"],
+            stdout=self.log, stderr=subprocess.DEVNULL, text=True,
+        )
+
+    def stop(self):
+        """Each reading as (seconds since the epoch, instant watts, 1-second average watts)."""
+        self.process.terminate()
+        self.process.wait()
+        self.log.seek(0)
+        readings = []
+        for line in self.log:
+            fields = [f.strip() for f in line.split(",")]
+            try:
+                when = datetime.strptime(fields[0], "%Y/%m/%d %H:%M:%S.%f").timestamp()
+                readings.append((when, float(fields[1]), float(fields[2])))
+            except (ValueError, IndexError):
+                continue
+        return readings
+
+
+def mean_watts(readings, start, end):
+    """The mean (instant, 1-second average) watts of the readings from start to end."""
+    inside = [r for r in readings if start <= r[0] <= end]
+    if not inside:
+        return None
+    return statistics.mean(r[1] for r in inside), statistics.mean(r[2] for r in inside)
 
 
 def make_run(env, params, games, load):
@@ -76,6 +119,10 @@ def main(socialjax_folder, games):
     )
     params = policy.load(socialjax_folder)
     print("JAX", jax.__version__, "on", jax.devices())
+    power = Power() if jax.default_backend() == "gpu" and shutil.which("nvidia-smi") else None
+    idle = (time.time(), time.time() + IDLE_S)
+    if power:
+        time.sleep(IDLE_S)
     rows = []
     for n in games:
         for load in ("random", "policy"):
@@ -85,25 +132,43 @@ def main(socialjax_folder, games):
             compile_s = time.perf_counter() - start
             jax.block_until_ready(compiled(jax.random.PRNGKey(1)))
             seconds, rewards = [], []
+            window = time.time()
             for t in range(TIMINGS):
                 start = time.perf_counter()
                 reward, _ = jax.block_until_ready(compiled(jax.random.PRNGKey(2 + t)))
                 seconds.append(time.perf_counter() - start)
                 rewards.append(float(reward) / n)
+            window = (window, time.time())
             rates = sorted(n * STEPS / s for s in seconds)
             steps, slowest, fastest = statistics.median(rates), rates[0], rates[-1]
-            rows.append((n, load, steps, slowest, fastest))
+            rows.append((n, load, steps, slowest, fastest, window, sum(seconds)))
             print(f"{n:5d} games, {load:6s}: {statistics.median(seconds):8.2f} s, "
                   f"{steps:12,.0f} game steps/s ({slowest:,.0f} to {fastest:,.0f}), "
                   f"{AGENTS * steps:13,.0f} agent decisions/s (compile {compile_s:.1f} s, "
                   f"return {statistics.mean(rewards):.1f} a game)", flush=True)
-    print(f"\nMedian of {TIMINGS} timings, with the slowest and fastest.\n")
-    print("| games at once | load | game steps a second | slowest to fastest "
-          "| agent decisions a second |")
-    print("|---|---|---|---|---|")
-    for n, load, steps, slowest, fastest in rows:
-        print(f"| {n:,} | {load} | {steps:,.0f} | {slowest:,.0f} to {fastest:,.0f} "
-              f"| {AGENTS * steps:,.0f} |")
+    readings = power.stop() if power else []
+    print(f"\nMedian of {TIMINGS} timings, with the slowest and fastest.")
+    if readings:
+        still = mean_watts(readings, *idle)
+        print(f"Board power: nvidia-smi's power.draw.instant and power.draw.average every 100 ms "
+              f"(each to within 5 W), averaged over each row's {TIMINGS} timings; idle, with JAX "
+              f"loaded: {still[0]:.1f} W instant, {still[1]:.1f} W average. The energy is the "
+              f"instant watts times the {TIMINGS} timings' seconds, over their game steps.")
+    print("\n| games at once | load | game steps a second | slowest to fastest "
+          "| agent decisions a second |" + (" board watts, instant / 1 s average "
+                                            "| millijoules a game step |" if readings else ""))
+    print("|---|---|---|---|---|" + ("---|---|" if readings else ""))
+    for n, load, steps, slowest, fastest, window, total_s in rows:
+        line = (f"| {n:,} | {load} | {steps:,.0f} | {slowest:,.0f} to {fastest:,.0f} "
+                f"| {AGENTS * steps:,.0f} |")
+        if readings:
+            watts = mean_watts(readings, *window)
+            if watts is None:
+                line += " - | - |"
+            else:
+                joules = watts[0] * total_s / (TIMINGS * n * STEPS)
+                line += f" {watts[0]:.1f} / {watts[1]:.1f} | {1000 * joules:.3f} |"
+        print(line)
 
 
 if __name__ == "__main__":
