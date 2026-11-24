@@ -14,7 +14,9 @@ The recipe, the same for every student and fixed before the first run:
 - **What it learns.** Each observation's 9 logits, by the KL divergence of the student's action
   distribution from the teacher's, as the policy is drawn from in play. Nothing else, no rewards.
 - **How.** Adam at 10^-3, cosine-decayed to 0 over 20 epochs of batches of 4,096, from seed 0. The
-  last 5 % of the observations, the last games recorded, are held out and only measured.
+  last 5 % of the observations, the last games recorded, are held out and only measured. The
+  environment variable DISTILL_SEED sets another seed, for the starting weights and the batches'
+  order both, to see how much a result moves from one training run to the next.
 - **Where it starts.** A student of the teacher's shape starts from the teacher's weights, its
   LittleBit layers by Dual-SVID of them, as the MNIST runs started from E1. A narrower one starts
   from PyTorch's default initialization, its LittleBit layers by Dual-SVID of that.
@@ -27,6 +29,7 @@ two sets of seeds, and before any student was scored.
 
 import json
 import math
+import os
 import platform
 import sys
 import time
@@ -196,7 +199,8 @@ def main(name, teacher_path, out_folder, rollouts):
     if name not in SPECS:
         sys.exit(f"no student {name!r}; the students are {', '.join(SPECS)}")
     spec = SPECS[name] | {"name": name}
-    torch.manual_seed(0)
+    seed = int(os.environ.get("DISTILL_SEED", "0"))
+    torch.manual_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     obs, logits = [], []
     for path in rollouts:
@@ -249,7 +253,7 @@ def main(name, teacher_path, out_folder, rollouts):
         "teacher_costs": costs(TEACHER | {"littlebit": {}}),
         "started_from": "the teacher" if same_shape else "PyTorch's default initialization",
         "recipe": {"epochs": EPOCHS, "batch": BATCH, "rate": RATE, "schedule": "cosine to 0",
-                   "held_out": HELD_OUT, "seed": 0, "loss": "KL(teacher || student)"},
+                   "held_out": HELD_OUT, "seed": seed, "loss": "KL(teacher || student)"},
         "rollouts": [str(Path(p).resolve()) for p in rollouts],
         "observations": {"train": len(train_obs), "held_out": held},
         "curve": curve,

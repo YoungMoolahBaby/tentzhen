@@ -1486,11 +1486,25 @@ student's return less the teacher's, game by game on the same seeds, with its st
 | w8-all-r4, DAgger | 8, 8, 8 | every layer, r = 4 | 315,852 sign additions, 80,423 scalings | 7,212 sign bits, 1,823 scales | 468.6 | 98 % | −10.8 ± 7.7 | yes |
 | all-r16-fresh, DAgger | 32, 32, 32 | every layer, r = 16 | 2,285,616 sign additions, 148,691 scalings | 83,376 sign bits, 5,291 scales | 469.1 | 98 % | −10.2 ± 7.7 | yes |
 
+**From one training run to the next.** The two DAgger students that matter most were trained
+again from seeds 1 and 2, on the same data. The seed sets both the starting weights and the order
+of the batches. (A first retrain at seed 0 gave the same held-out KL to 4 digits, so it showed
+only that training repeats, as new-melting-pot pointed out.)
+
+| student, with DAgger | seed 0 | seed 1 | seed 2 | against the teacher, game by game |
+|---|---|---|---|---|
+| w8 | 525.4 | 517.5 | 512.9 | +46.0 ± 8.1, +38.1 ± 8.5, +33.5 ± 8.5 |
+| w8-all-r4 | 468.6 | 446.3 | 488.7 | −10.8 ± 7.7, −33.1 ± 7.5, +9.3 ± 7.9 |
+
+So w8 outscores its teacher in all three runs, each by at least 3.9 standard errors. w8-all-r4
+keeps 93 to 102 % and clears the bar in all three, the closest by 2.1 standard errors. Its score
+moves about twice as far between runs as w8's.
+
 How these are known:
 
 - **The scripts' figures.** They come from `rollouts.py` and `distill.py`, one training run per
-  student, and no test re-checks them. The students' files are kept outside the repo, in
-  `D:\tentzhen-data\cleanup\`, and none is committed.
+  student but for the two above, and no test re-checks them. The students' files are kept outside
+  the repo, in `D:\tentzhen-data\cleanup\`, and none is committed.
 - **What the counts follow.** The arithmetic and weight counts are `distill.py`'s `costs`: a
   LittleBit layer adds r (fan-in + out) signs and scales fan-in + r + out values at each position.
 - **Pairing hardly helps.** On the same seed, a student's return and the teacher's correlate at
@@ -1500,11 +1514,12 @@ How these are known:
 What it means for the plan:
 
 - **The convolutions can be 8 wide, not 32.** That is 6.5 times less arithmetic. After one DAgger
-  step, that student scored 46 more a game than its teacher, 5.7 standard errors. Why a student
-  outscores its teacher is `unknown`. So is whether a second training run would.
+  step, that student scores 34 to 46 more a game than its teacher, in each of three training runs.
+  Why a student outscores its teacher is `unknown`.
 - **The whole policy can be LittleBit.** At 8 wide and r = 4 it is 7,212 sign bits and 1,823
-  scales, and after one DAgger step it keeps 98 % of the score. That is 316,000 sign additions and
-  80,000 scalings a move, against the teacher's 4.3 million multiply-adds.
+  scales, and after one DAgger step it keeps 93 to 102 % of the score over three training runs.
+  That is 316,000 sign additions and 80,000 scalings a move, against the teacher's 4.3 million
+  multiply-adds.
 - **Training on the student's own games matters more than rank.** The fully LittleBit students sat
   at 81 to 86 % whatever their rank, until one round of DAgger lifted them to 98 %. A student
   trained only on the teacher's games meets situations its teacher never showed it.
