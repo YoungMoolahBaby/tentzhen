@@ -6,7 +6,8 @@
 <student> names one of SPECS. <teacher.npz> is the teacher as `models/cleanup/students.py teacher`
 writes it, and each <rollouts.npz> what `models/cleanup/rollouts.py --record` writes: observations,
 and the teacher's logits for each. It writes <out-folder>/student.npz, the student in the form
-`models/cleanup/students.py` loads and the game plays, and summary.json.
+`models/cleanup/students.py` loads and the game plays; student.pt, its PyTorch state, LittleBit's
+latent factors and scales included, for the integer form to start from; and summary.json.
 
 The recipe, the same for every student and fixed before the first run:
 
@@ -241,6 +242,7 @@ def main(name, teacher_path, out_folder, rollouts):
         arrays[f"{layer}/kernel"] = weight.astype(np.float32)
         arrays[f"{layer}/bias"] = bias.astype(np.float32)
     np.savez(out / "student.npz", **arrays)
+    torch.save(net.state_dict(), out / "student.pt")
     summary = {
         "student": spec,
         "costs": costs(spec),
