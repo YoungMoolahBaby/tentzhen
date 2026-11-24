@@ -1769,11 +1769,14 @@ and its behaviour records.
 What it means for the plan:
 
 - **The cheapest faithful student is w8, in float.** It is the shape to make LittleBit from.
-- **Next: start a LittleBit student from the faithful w8.** The teacher's own shape played as the
-  teacher does when it started from the teacher's weights, and a LittleBit student of that shape
-  starts from Dual-SVID of them. w8's LittleBit students have only started fresh so far. For that,
-  `distill.py` would read w8's `student.pt` as the weights to split. Then longer training, then
-  DAgger.
+- **Next: longer training, then DAgger, on the 500 games.** The LittleBit students' training KLs
+  were still falling when the rate reached 0. One round of DAgger lifted the fully LittleBit
+  students' scores from 81–86 % to 98 % ("How small the policy can get"), though not their play to
+  the teacher's.
+- **Not first: starting from w8's own weights.** Dual-SVID of a trained network is how the
+  teacher's own shape starts. But with every layer factorized, the network it gave began near
+  random, at a KL of 1.77, and never recovered ("How small the policy can get"). Whether w8's
+  weights would do better is `unknown`.
 
 ## What w8-all-r4 costs on the i9, as the engine stands
 
