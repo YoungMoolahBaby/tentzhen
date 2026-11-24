@@ -64,8 +64,10 @@ project #3 judges a compressed policy by the behaviour bar, not by score (`littl
 In Clean Up, zapping is the conflict, and the compressed students already get it wrong both
 ways. These are `behaviour.py`'s figures, one training run each:
 
-- **Fewer zaps:** two of PR #36's students zap 5 to 9 fewer times a game than the teacher.
-  Hardwired as they are, they would show a more peaceful society than the trained agents make.
+- **Fewer zaps:** w8-dense-r4 at 300 epochs and w8-all-r4 after one step of DAgger zap 5 to 9
+  fewer times a game than the teacher (`littlebit.md`, "Longer training, and one step of
+  DAgger"). Hardwired as they are, they would show a more peaceful society than the trained
+  agents make.
 - **More zaps:** the 20-epoch w8-all-r4 zaps 7.5 more (`littlebit.md`, "A recipe that makes a
   faithful student"). It would show a more violent one.
 
@@ -145,4 +147,4 @@ turns a model into a 3D printer's paths. It would be written in Rust. Hacker Fab
 - Brownfield-compute's building work: shared or moved, and in which language here, since
   CLAUDE.md keeps long-lived code in Rust.
 - Upstream: whether via-balaena/tentzhen takes the wider scope.
-- The training's compute (`littlebit.md`, PR #36).
+- The training's compute (`littlebit.md`, "The training needs more compute").
